@@ -6,10 +6,11 @@ import sys
 import subprocess
 import time
 import ctypes
+import customtkinter as ctk
 import pystray
 from PIL import Image
 import tkinter as tk
-from tkinter import simpledialog, messagebox, Text, Toplevel, Scrollbar, END
+from tkinter import simpledialog, messagebox, Text, Toplevel, Scrollbar, END, ttk
 from teleport import connect_device, get_device_token, generate_client_hint
 
 # Config paths (store in appdata to persist)
@@ -193,71 +194,106 @@ def on_delete_config(icon, item):
             return False, "Error while deleting configuration"
 
 def open_options_window(icon=None, item=None):
-    """Opens a Tkinter window with dynamic, refreshable buttons."""
-    root = tk.Tk()
-    root.title("AmpliFi Teleport Controls")
-    root.geometry("300x220")
+    """Opens a modern CustomTkinter window with rounded gradient buttons."""
+    ctk.set_appearance_mode("dark")  # Matches your #181818 dark theme
+    ctk.set_default_color_theme("blue")  # Base theme - can be "green", "dark-blue", etc.
+
+    root = ctk.CTk()
+    root.title("AmpliFi Teleport for Desktop")
+    root.geometry("350x320")
     root.resizable(False, False)
-    root.attributes('-topmost', True)  # Keep on top
+    root.attributes('-topmost', True)
+    root.configure(bg="#181818")
 
-    # Header
-    tk.Label(root, text="AmpliFi Teleport", font=("Arial", 14, "bold")).pack(pady=10)
+    # Header frame 
+    header_frame = ctk.CTkFrame(root, fg_color="#1a9aff", corner_radius=0)
+    header_frame.pack(fill="x", pady=(0, 10))
 
-    # Container frame for buttons (we'll clear and repopulate this)
-    button_frame = tk.Frame(root)
-    button_frame.pack(fill='both', expand=True, padx=20, pady=10)
+    header_label = ctk.CTkLabel(
+        header_frame,
+        text="AmpliFi Teleport for Desktop",
+        font=("Arial", 18, "bold"),
+        text_color="white"
+    )
+    header_label.pack(pady=12)
+
+    # Main content frame
+    content_frame = ctk.CTkFrame(root, fg_color="transparent")
+    content_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
     def refresh_buttons():
-        # Clear existing buttons
-        for widget in button_frame.winfo_children():
+        # Clear previous buttons
+        for widget in content_frame.winfo_children():
             widget.destroy()
 
         tunnel_active = is_tunnel_active(retries=4, delay=0.8)
 
+        # Custom button style with gradient-like hover
+        button_style = {
+            "width": 280,
+            "height": 50,
+            "corner_radius": 20,
+            "text_color": "white",
+            "font": ("Arial", 14, "bold")
+        }
+
         if not tunnel_active:
-            # Show Connect when inactive or no tunnel
-            tk.Button(
-                button_frame,
+            ctk.CTkButton(
+                content_frame,
                 text="Connect",
-                width=25,
-                command=lambda: action_and_refresh(on_connect)
-            ).pack(pady=8)
+                fg_color="#1a9aff",
+                hover_color="#0d6efd",
+                command=lambda: action_and_refresh(on_connect),
+                **button_style
+            ).pack(pady=10)
 
         if tunnel_active:
-            # Show Disconnect only when tunnel is active
-            tk.Button(
-                button_frame,
+            ctk.CTkButton(
+                content_frame,
                 text="Disconnect",
-                width=25,
-                command=lambda: action_and_refresh(on_disconnect)
-            ).pack(pady=8)
+                fg_color="#1a9aff",
+                hover_color="#0d6efd",
+                command=lambda: action_and_refresh(on_disconnect),
+                **button_style
+            ).pack(pady=10)
 
         if os.path.exists(TOKEN_FILE) or os.path.exists(UUID_FILE) or os.path.exists(CONFIG_PATH):
-            tk.Button(
-                button_frame,
+            ctk.CTkButton(
+                content_frame,
                 text="Delete Existing Configuration",
-                width=25,
-                command=lambda: action_and_refresh(on_delete_config)
-            ).pack(pady=8)
+                fg_color="#1a9aff",
+                hover_color="#0d6efd",
+                command=lambda: action_and_refresh(on_delete_config),
+                **button_style
+            ).pack(pady=10)
 
-        tk.Button(
-            button_frame,
+        # Quit button (same style)
+        ctk.CTkButton(
+            content_frame,
             text="Quit",
-            width=25,
-            command=lambda: sys.exit(0)
-        ).pack(pady=8)
+            fg_color="#e74c3c",
+            hover_color="#c0392b",
+            command=lambda: sys.exit(0),
+            **button_style
+        ).pack(pady=10)
+
+        # Version label
+        ctk.CTkLabel(
+            root,
+            text="Version 1.0.0",
+            font=("Arial", 10),
+            text_color="#888888"
+        ).pack(side="bottom", pady=(0, 10))
 
     def action_and_refresh(action_func):
-        """Run the action, show result if needed, then refresh buttons."""
-        # Run the original action (pass None for icon/item since not needed here)
         success, msg = action_func(icon=None, item=None)
 
-        # Refresh the button layout immediately after action
+        if action_func is on_disconnect:
+            time.sleep(2.0)
+
         refresh_buttons()
 
-    # Initial population of buttons
     refresh_buttons()
-
     root.mainloop()
 
 def main():
