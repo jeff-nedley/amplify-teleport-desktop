@@ -26,7 +26,7 @@ Ubiquiti has not yet released an official desktop client for AmpliFi Teleport â€
 ## Requirements
 
 - Windows 10 or 11 (64-bit)
-- [WireGuard official client](https://www.wireguard.com/install/) installed (Gets bundled with installer)
+- [WireGuard official client](https://www.wireguard.com) installed (Gets bundled with installer)
 - An active AmpliFi router with Teleport enabled
 - A valid Teleport PIN from the AmpliFi mobile app
 
