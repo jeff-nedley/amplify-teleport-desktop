@@ -12,29 +12,37 @@ import socket
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
 from aiortc.sdp import grouplines, parse_attr
 
+from platform_utils import DEVICE_PLATFORM, find_wg, subprocess_kwargs
+
 ICE_STUN_SERVER = "stun:global.stun.twilio.com:3478"
 
 REQUEST_DEVICE_TOKEN_URL = "https://client.amplifi.com/api/deviceToken/mlRequestClientAccess"
 ICE_CONFIG_URL = "https://client.amplifi.com/api/deviceToken/mlIceConfig"
 SIGNALING_URL = "https://client.amplifi.com/api/deviceToken/mlClientConnect"
 
-# Decides the device icon in the router control panel
-DEVICE_PLATFORM = "iOS"
-
 logger = logging.getLogger("AmpliFi Teleport for Desktop")
 
+
 def _generate_wg_keys():
-    privateKey = subprocess.check_output(["wg", "genkey"],
-                                        encoding="utf8").strip()
+    wg = find_wg()
+    if not wg:
+        raise Exception("WireGuard 'wg' tool not found. Install WireGuard and ensure wg is on PATH.")
 
-    publicKeyProcess = subprocess.Popen(["wg", "pubkey"],
-                                        stdout = subprocess.PIPE,
-                                        stdin = subprocess.PIPE,
-                                        encoding="utf8")
+    kwargs = subprocess_kwargs()
+    private_key = subprocess.check_output(
+        [wg, "genkey"], encoding="utf8", **kwargs
+    ).strip()
 
-    publicKey = publicKeyProcess.communicate(input=privateKey)[0].strip()
+    public_key_process = subprocess.Popen(
+        [wg, "pubkey"],
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+        encoding="utf8",
+        **kwargs,
+    )
+    public_key = public_key_process.communicate(input=private_key)[0].strip()
+    return private_key, public_key
 
-    return privateKey, publicKey
 
 def _get_device_name():
     return socket.gethostname()

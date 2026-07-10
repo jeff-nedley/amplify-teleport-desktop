@@ -7,10 +7,13 @@ pyinstaller --onefile --windowed `
   --name "AmpliFi Teleport for Desktop" `
   --icon tray-icon.ico `
   --add-data "tray-icon.ico;." `
+  --add-data "tray-icon.png;." `
   --uac-admin `
   --hidden-import config `
   --hidden-import tunnel `
   --hidden-import ui `
   --hidden-import notifications `
+  --hidden-import platform_utils `
+  --hidden-import teleport `
   --hidden-import plyer.platforms.win.notification `
   main.py

@@ -6,3 +6,5 @@ dist/
 *.spec
 *.log
 *.exe
+*.app
+.DS_Store
