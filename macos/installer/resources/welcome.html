@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif; margin: 20px; color: #222; }
+    h1 { font-size: 18px; }
+    p, li { font-size: 13px; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <h1>AmpliFi Teleport for Desktop</h1>
+  <p>
+    This installer sets up the unofficial AmpliFi Teleport desktop client on your Mac —
+    the same setup flow as the Windows installer.
+  </p>
+  <ul>
+    <li>Installs <strong>AmpliFi Teleport for Desktop</strong> into Applications</li>
+    <li>Detects whether <strong>WireGuard</strong> command-line tools are present</li>
+    <li>If WireGuard is missing, installs it <strong>silently</strong> via Homebrew (<code>wireguard-tools</code> + <code>bash</code>)</li>
+    <li>Launches the app when setup finishes</li>
+  </ul>
+  <p>
+    Administrator privileges are required (equivalent to the Windows UAC prompt).
+    An internet connection is needed if WireGuard must be downloaded.
+  </p>
+</body>
+</html>

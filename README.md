@@ -39,19 +39,26 @@ Ubiquiti has not yet released an official desktop client for AmpliFi Teleport �
 
 ### macOS
 - macOS 12+ (Intel or Apple Silicon)
-- Homebrew WireGuard tools (and bash 4+ for `wg-quick`):
-
-```bash
-brew install wireguard-tools bash
-```
+- WireGuard CLI tools (`wg` / `wg-quick`) — **installed automatically by the Setup DMG** if missing (same as Windows)
 
 ## Installation
 
 ### Windows
 1. Go to the **[Releases page](https://github.com/jeff-nedley/amplify-teleport-desktop/releases)**  
-2. Download the latest **.exe installer** (e.g. `AmpliFi Teleport For Desktop Setup.exe`)  
+2. Download the latest **Setup .exe** (e.g. `Amplifi Teleport For Desktop Setup-1.1.0.exe`)  
 3. Run the installer and follow the prompts  
-4. The control window appears; when closed with **X**, the app stays in the system tray (hidden icons area ↑)
+4. If WireGuard is not installed, setup downloads and installs it silently  
+5. The control window appears; when closed with **X**, the app stays in the system tray (hidden icons area ↑)
+
+### macOS
+1. Go to the **[Releases page](https://github.com/jeff-nedley/amplify-teleport-desktop/releases)**  
+2. Download the latest **Setup .dmg** (e.g. `Amplifi Teleport For Desktop Setup-1.1.0.dmg`)  
+3. Open the DMG and double-click the **Setup .pkg**  
+4. Follow the installer (administrator password required)  
+5. If WireGuard is not installed, setup installs it silently via Homebrew (`wireguard-tools` + `bash`)  
+6. The app launches when installation finishes; use the menu bar icon after closing the window  
+
+**Uninstall (macOS):** open **Uninstall AmpliFi Teleport** from Applications — you will be asked whether to remove WireGuard as well (same prompt as Windows).
 
 ### macOS (from source)
 ```bash
@@ -62,8 +69,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python main.py
 ```
-
-Optional: build a `.app` bundle with `./build_macos.sh` (requires PyInstaller).
 
 ## How to Use
 
@@ -112,4 +117,16 @@ python main.py
 ### Package
 
 - **Windows:** `.\build_exe.ps1` then compile `app_installer_script.iss` with Inno Setup  
-- **macOS:** `./build_macos.sh` → `dist/AmpliFi Teleport for Desktop.app`
+  → `Amplifi Teleport For Desktop Setup-<version>.exe`  
+  (detects WireGuard; silently installs the official MSI if missing)
+- **macOS:** `./build_macos_dmg.sh`  
+  → `dist/Amplifi Teleport For Desktop Setup-<version>.dmg`  
+  (contains a Setup `.pkg` that detects WireGuard and silently installs it if missing)
+
+| Setup step | Windows (Inno) | macOS (DMG → PKG) |
+| --- | --- | --- |
+| Install app | Program Files | `/Applications` |
+| Detect WireGuard | Registry / `wg.exe` | `wg` + `wg-quick` on disk |
+| Missing WireGuard | Download MSI → silent `msiexec` | Homebrew → silent `brew install wireguard-tools bash` |
+| Launch after setup | Yes | Yes |
+| Uninstall asks to remove WireGuard | Yes | Yes (`Uninstall AmpliFi Teleport`) |
