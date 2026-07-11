@@ -143,22 +143,8 @@ def _fallback_tray_pixmap(size: int = 64) -> QPixmap:
     return pix
 
 
-def _macos_menu_bar_pixmap(size: int = 128) -> QPixmap:
-    """High-contrast 'AT' template glyph — reliably visible in the menu bar."""
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pix)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-    font = QFont("Helvetica Neue", int(size * 0.55), QFont.Weight.Bold)
-    painter.setFont(font)
-    painter.setPen(QColor(0, 0, 0))
-    painter.drawText(pix.rect(), int(Qt.AlignmentFlag.AlignCenter), "AT")
-    painter.end()
-    return pix
-
-
 def _app_icon() -> QIcon:
+    """Application icon from tray-icon.png / .ico (window, Dock, Qt tray)."""
     if IS_WINDOWS and os.path.exists(ICON_PATH_ICO):
         icon = QIcon(ICON_PATH_ICO)
         if not icon.isNull():
@@ -167,18 +153,15 @@ def _app_icon() -> QIcon:
         icon = QIcon(ICON_PATH_PNG)
         if not icon.isNull():
             return icon
+    if os.path.exists(ICON_PATH_ICO):
+        icon = QIcon(ICON_PATH_ICO)
+        if not icon.isNull():
+            return icon
     return QIcon(_fallback_tray_pixmap())
 
 
 def _tray_icon() -> QIcon:
-    """Icon for the system tray / menu bar — never null; mask on macOS."""
-    if IS_MACOS:
-        # Prefer a drawn template glyph over the full-color app PNG.
-        # Colored PNGs with setIsMask can render invisibly depending on alpha.
-        icon = QIcon(_macos_menu_bar_pixmap())
-        icon.setIsMask(True)
-        return icon
-
+    """System tray icon — same artwork as the application icon."""
     icon = _app_icon()
     if icon.isNull():
         icon = QIcon(_fallback_tray_pixmap())
@@ -200,6 +183,13 @@ def ensure_app() -> QApplication:
         app.setStyleSheet(APP_STYLESHEET)
         # Prefer a cross-platform font that Qt maps well on Win/Mac
         app.setFont(QFont("Segoe UI" if IS_WINDOWS else "Helvetica Neue", 13))
+        if IS_MACOS:
+            try:
+                from macos_tray import set_dock_icon
+
+                set_dock_icon(ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None)
+            except Exception:
+                logger.exception("Failed to set macOS Dock icon at startup")
     _app_state["app"] = app
     return app
 
@@ -501,6 +491,7 @@ def _start_macos_menubar(window: ControlWindow):
     helper = MenuBarHelper(
         on_open=lambda: bridge.open_requested.emit(),
         on_quit=lambda: bridge.quit_requested.emit(),
+        icon_path=ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None,
     )
     if not helper.start():
         raise RuntimeError("Failed to start macOS menu bar helper process")

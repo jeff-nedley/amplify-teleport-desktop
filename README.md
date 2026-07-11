@@ -54,7 +54,7 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 The app requests Administrator rights at startup (required for the WireGuard tunnel service).
 
 ### macOS
-1. Look in the **menu bar** (top-right, near the clock) for **AT** — there is no Dock icon
+1. Look in the **menu bar** (top-right, near the clock) for the AmpliFi Teleport icon — there is no Dock icon while the window is hidden
    - On notched MacBooks the icon may be inside the menu bar overflow (click the icon next to Control Center)
 2. Click it → **Open Controls** (closing the window hides it; the app stays running in the menu bar)
 3. **First time:** click **Connect**, enter your 5-character Teleport PIN, and wait for the tunnel to connect

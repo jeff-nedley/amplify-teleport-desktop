@@ -8,16 +8,21 @@ destroy the status item. Prints commands to stdout:
   OPEN  — user chose Open Controls
   QUIT  — user chose Quit
 
-The parent app should terminate this process on exit.
+Optional argv[1] / AMPLIFI_TRAY_ICON: path to the app icon (PNG/ICNS).
 """
 
+from __future__ import annotations
+
+import os
 import sys
 
 from AppKit import (
     NSApplication,
     NSApplicationActivationPolicyAccessory,
+    NSImage,
     NSMenu,
     NSMenuItem,
+    NSSquareStatusItemLength,
     NSStatusBar,
     NSVariableStatusItemLength,
 )
@@ -36,6 +41,35 @@ class HelperDelegate(NSObject):
         AppHelper.stopEventLoop()
 
 
+def _icon_path() -> str | None:
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        candidate = sys.argv[1].strip()
+        if os.path.exists(candidate):
+            return candidate
+    env = os.environ.get("AMPLIFI_TRAY_ICON", "").strip()
+    if env and os.path.exists(env):
+        return env
+    # Same-directory fallback when launched next to the icon
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
+        path = os.path.join(here, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _load_menu_bar_image(path: str) -> object | None:
+    image = NSImage.alloc().initWithContentsOfFile_(path)
+    if image is None:
+        print(f"ERROR icon_load_failed {path}", flush=True)
+        return None
+    # Menu bar extras are ~18pt; keep full-color app artwork (not a template).
+    image.setSize_((18.0, 18.0))
+    image.setTemplate_(False)
+    _RETAINED.append(image)
+    return image
+
+
 def main() -> int:
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -43,9 +77,15 @@ def main() -> int:
     delegate = HelperDelegate.alloc().init()
     _RETAINED.append(delegate)
 
-    status = NSStatusBar.systemStatusBar().statusItemWithLength_(
-        float(NSVariableStatusItemLength)
+    icon_path = _icon_path()
+    image = _load_menu_bar_image(icon_path) if icon_path else None
+
+    length = (
+        float(NSSquareStatusItemLength)
+        if image is not None
+        else float(NSVariableStatusItemLength)
     )
+    status = NSStatusBar.systemStatusBar().statusItemWithLength_(length)
     _RETAINED.append(status)
 
     button = status.button()
@@ -53,8 +93,15 @@ def main() -> int:
         print("ERROR no_button", flush=True)
         return 1
 
-    button.setTitle_("AT")
     button.setToolTip_("AmpliFi Teleport for Desktop")
+    if image is not None:
+        button.setImage_(image)
+        button.setTitle_("")
+        print(f"ICON {icon_path}", flush=True)
+    else:
+        # Last-resort visible glyph if the asset is missing
+        button.setTitle_("AT")
+        print("WARN no_icon_using_title", flush=True)
 
     menu = NSMenu.alloc().init()
     open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(

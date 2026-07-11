@@ -27,6 +27,33 @@ def hide_dock_icon() -> None:
     logger.info("macOS activation policy set to Accessory (no Dock icon)")
 
 
+def set_dock_icon(icon_path: Optional[str] = None) -> bool:
+    """Set the Dock / app icon to the AmpliFi Teleport artwork."""
+    from AppKit import NSApplication, NSImage
+
+    path = icon_path
+    if not path or not os.path.exists(path):
+        from platform_utils import resource_path
+
+        for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
+            candidate = resource_path(name)
+            if os.path.exists(candidate):
+                path = candidate
+                break
+    if not path or not os.path.exists(path):
+        logger.warning("No app icon file found for Dock")
+        return False
+
+    image = NSImage.alloc().initWithContentsOfFile_(path)
+    if image is None:
+        logger.error("Failed to load Dock icon from %s", path)
+        return False
+
+    NSApplication.sharedApplication().setApplicationIconImage_(image)
+    logger.info("Dock / application icon set from %s", path)
+    return True
+
+
 def present_app() -> None:
     """
     Allow a hidden window to come to the front.
@@ -38,6 +65,8 @@ def present_app() -> None:
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    # Ensure the Dock tile uses our icon when it becomes visible.
+    set_dock_icon()
     app.activateIgnoringOtherApps_(True)
     logger.info("macOS activation policy set to Regular (presenting window)")
 
@@ -58,6 +87,16 @@ def _helper_script_path() -> str:
     return resource_path("macos_menubar_helper.py")
 
 
+def _helper_icon_path() -> Optional[str]:
+    from platform_utils import resource_path
+
+    for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
+        path = resource_path(name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 class MenuBarHelper:
     """Owns the separate menu-bar helper process."""
 
@@ -66,9 +105,11 @@ class MenuBarHelper:
         *,
         on_open: Callable[[], None],
         on_quit: Callable[[], None],
+        icon_path: Optional[str] = None,
     ) -> None:
         self._on_open = on_open
         self._on_quit = on_quit
+        self._icon_path = icon_path or _helper_icon_path()
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._stopping = False
@@ -86,16 +127,23 @@ class MenuBarHelper:
             logger.error("Menu bar helper script missing: %s", script)
             return False
 
+        cmd = [sys.executable, "-u", script]
+        env = os.environ.copy()
+        if self._icon_path and os.path.exists(self._icon_path):
+            cmd.append(self._icon_path)
+            env["AMPLIFI_TRAY_ICON"] = self._icon_path
+
         try:
             self._stopping = False
             self._proc = subprocess.Popen(
-                [sys.executable, "-u", script],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
                 start_new_session=True,
+                env=env,
             )
         except Exception:
             logger.exception("Failed to launch menu bar helper")
@@ -108,7 +156,11 @@ class MenuBarHelper:
             daemon=True,
         )
         self._thread.start()
-        logger.info("Started macOS menu bar helper pid=%s", self._proc.pid)
+        logger.info(
+            "Started macOS menu bar helper pid=%s icon=%s",
+            self._proc.pid,
+            self._icon_path,
+        )
         return True
 
     def stop(self) -> None:
