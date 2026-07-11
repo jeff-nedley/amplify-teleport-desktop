@@ -329,12 +329,21 @@ def quit_application(icon=None, item=None):
         os._exit(0)
 
 
+def set_tray_icon(icon):
+    """Attach the pystray icon handle after the control window already exists."""
+    _control_app["icon"] = icon
+
+
 def create_control_window(icon=None, quit_callback=None):
     """
     Create the singleton control window (does not start mainloop).
     Closing the window hides it to the tray / menu bar instead of quitting.
     """
     if _control_app["root"] is not None:
+        if icon is not None:
+            _control_app["icon"] = icon
+        if quit_callback is not None:
+            _control_app["quit_callback"] = quit_callback
         return _control_app["root"]
 
     ctk.set_appearance_mode("dark")

@@ -78,6 +78,12 @@ pip install -r requirements.txt
 python main.py
 ```
 
+On macOS, install WireGuard tools first if you are not using the Setup DMG:
+
+```bash
+brew install wireguard-tools bash
+```
+
 ### Packaging
 
 ```powershell

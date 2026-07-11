@@ -2,7 +2,7 @@
 customtkinter>=5.2.2                # for ctk (UI, dialogs)
 pystray>=0.19.5                     # for system tray / menu bar icon
 Pillow>=10.0.0                      # for PIL.Image
-plyer>=2.1.0                        # for notifications (Windows toast + macOS Notification Center)
+plyer>=2.1.0                        # Windows toast notifications (macOS uses osascript)
 
 # Networking, async, and WebRTC (from aiortc in teleport.py)
 requests>=2.28.0                    # for HTTP requests in get_device_token etc.

@@ -6,7 +6,6 @@ import os
 import sys
 import threading
 
-import pystray
 from PIL import Image
 from logging.handlers import RotatingFileHandler
 
@@ -16,7 +15,7 @@ from platform_utils import (
     get_log_path,
     run_elevated_startup,
 )
-from ui import create_control_window, show_control_window
+from ui import create_control_window, set_tray_icon, show_control_window
 from notifications import show_toast
 
 logger = logging.getLogger("AmpliFi Teleport for Desktop")
@@ -43,24 +42,10 @@ def main():
     # macOS: app stays user-level; tunnel commands prompt via native admin dialog.
     run_elevated_startup()
 
-    ok, msg = ensure_wireguard_available()
-    if not ok:
-        logger.error(msg)
-        show_toast("WireGuard Required", msg.replace("\n", " "))
-
-    image = Image.open(ICON_PATH_PNG)
+    # On macOS, Tk must create NSApplication before pystray imports AppKit.
+    # Importing pystray first causes: -[NSApplication _setup:]: unrecognized selector
     icon_holder = {"icon": None}
     exiting = {"done": False}
-
-    def request_show(icon=None, item=None):
-        """Marshal UI show onto the Tk main thread."""
-        root = create_control_window(
-            icon=icon_holder.get("icon"), quit_callback=on_quit_from_ui
-        )
-        try:
-            root.after(0, lambda: show_control_window(icon_holder.get("icon")))
-        except Exception:
-            show_control_window(icon_holder.get("icon"))
 
     def stop_app():
         if exiting["done"]:
@@ -82,10 +67,38 @@ def main():
     def on_quit_from_ui():
         stop_app()
 
-    def on_quit_from_tray(icon=None, item=None):
-        stop_app()
+    root = create_control_window(icon=None, quit_callback=on_quit_from_ui)
+    # Force Tk/AppKit initialization before pystray is imported
+    root.update_idletasks()
+    show_control_window(icon=None)
 
-    # Same menu on both OSes: Open Controls (default left-click on Windows) + Quit
+    ok, msg = ensure_wireguard_available()
+    if not ok:
+        logger.error(msg)
+        # Defer toast so the UI is already alive
+        root.after(
+            300,
+            lambda: show_toast("WireGuard Required", msg.replace("\n", " ")),
+        )
+
+    # Lazy-import pystray only after Tk is up (critical on macOS)
+    import pystray
+
+    image = Image.open(ICON_PATH_PNG)
+
+    def request_show(icon=None, item=None):
+        """Marshal UI show onto the Tk main thread."""
+        try:
+            root.after(0, lambda: show_control_window(icon_holder.get("icon")))
+        except Exception:
+            show_control_window(icon_holder.get("icon"))
+
+    def on_quit_from_tray(icon=None, item=None):
+        try:
+            root.after(0, stop_app)
+        except Exception:
+            stop_app()
+
     menu = pystray.Menu(
         pystray.MenuItem("Open Controls", request_show, default=True),
         pystray.MenuItem("Quit", on_quit_from_tray),
@@ -98,14 +111,12 @@ def main():
         menu=menu,
     )
     icon_holder["icon"] = icon
-
-    root = create_control_window(icon=icon, quit_callback=on_quit_from_ui)
-    show_control_window(icon)
+    set_tray_icon(icon)
 
     logger.info("Application started on %s", sys.platform)
 
-    # Tk owns the main thread (required for CustomTkinter on Windows and macOS).
-    # Tray / menu-bar icon runs in a daemon thread.
+    # Tk owns the main thread. Tray / menu-bar runs in a daemon thread.
+    # (On macOS this only works reliably if Tk initialized NSApplication first.)
     tray_thread = threading.Thread(target=icon.run, name="pystray", daemon=True)
     tray_thread.start()
 
