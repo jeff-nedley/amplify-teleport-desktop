@@ -11,15 +11,11 @@ destroy the status item. Prints commands to stdout:
 The parent app should terminate this process on exit.
 """
 
-from __future__ import annotations
-
 import sys
 
-import objc
 from AppKit import (
     NSApplication,
     NSApplicationActivationPolicyAccessory,
-    NSImage,
     NSMenu,
     NSMenuItem,
     NSStatusBar,
@@ -38,15 +34,6 @@ class HelperDelegate(NSObject):
     def quitApp_(self, _sender):  # noqa: N802
         print("QUIT", flush=True)
         AppHelper.stopEventLoop()
-
-
-def _make_title_image() -> object | None:
-    """Optional: leave title-only if image creation fails."""
-    try:
-        # 1x1 clear image unused — we rely on the "AT" title for visibility.
-        return None
-    except Exception:
-        return None
 
 
 def main() -> int:
@@ -68,9 +55,6 @@ def main() -> int:
 
     button.setTitle_("AT")
     button.setToolTip_("AmpliFi Teleport for Desktop")
-    image = _make_title_image()
-    if image is not None:
-        button.setImage_(image)
 
     menu = NSMenu.alloc().init()
     open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
