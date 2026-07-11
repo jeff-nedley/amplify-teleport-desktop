@@ -10,7 +10,7 @@ import os
 import sys
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QFont, QIcon
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -127,12 +127,45 @@ _app_state = {
 }
 
 
+def _fallback_tray_pixmap(size: int = 64) -> QPixmap:
+    """Simple black-on-transparent mark so the tray is never given a null icon."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(0, 0, 0))
+    pen.setWidth(max(2, size // 16))
+    painter.setPen(pen)
+    margin = size // 8
+    painter.drawEllipse(margin, margin, size - 2 * margin, size - 2 * margin)
+    painter.drawEllipse(
+        size // 4, size // 4, size // 2, size // 2
+    )
+    painter.end()
+    return pix
+
+
 def _app_icon() -> QIcon:
     if IS_WINDOWS and os.path.exists(ICON_PATH_ICO):
-        return QIcon(ICON_PATH_ICO)
+        icon = QIcon(ICON_PATH_ICO)
+        if not icon.isNull():
+            return icon
     if os.path.exists(ICON_PATH_PNG):
-        return QIcon(ICON_PATH_PNG)
-    return QIcon()
+        icon = QIcon(ICON_PATH_PNG)
+        if not icon.isNull():
+            return icon
+    return QIcon(_fallback_tray_pixmap())
+
+
+def _tray_icon() -> QIcon:
+    """Icon for the system tray / menu bar — never null; mask on macOS."""
+    icon = _app_icon()
+    if icon.isNull():
+        icon = QIcon(_fallback_tray_pixmap())
+    if IS_MACOS:
+        # Lets macOS tint the glyph for light/dark menu bars.
+        icon.setIsMask(True)
+    return icon
 
 
 def ensure_app() -> QApplication:
@@ -349,11 +382,13 @@ class ControlWindow(QMainWindow):
         quit_application()
 
 
-def create_windows_tray(window: ControlWindow) -> QSystemTrayIcon:
-    tray = QSystemTrayIcon(_app_icon(), window)
+def create_qt_tray(window: ControlWindow) -> QSystemTrayIcon:
+    """QSystemTrayIcon for Windows (and macOS fallback)."""
+    tray = QSystemTrayIcon(_tray_icon(), window)
     tray.setToolTip("AmpliFi Teleport for Desktop")
 
-    menu = QMenu()
+    # Parent menu to the window so Qt owns the lifetime (avoids GC drops).
+    menu = QMenu(window)
     open_action = QAction("Open Controls", menu)
     open_action.triggered.connect(window.show_and_raise)
     quit_action = QAction("Quit", menu)
@@ -371,15 +406,25 @@ def create_windows_tray(window: ControlWindow) -> QSystemTrayIcon:
             window.show_and_raise()
 
     tray.activated.connect(on_activated)
+    tray.setVisible(True)
     tray.show()
+    logger.info(
+        "QSystemTrayIcon shown (null_icon=%s, available=%s)",
+        _tray_icon().isNull(),
+        QSystemTrayIcon.isSystemTrayAvailable(),
+    )
     return tray
 
 
 def create_macos_tray(window: ControlWindow):
-    """Native AppKit status item (menu bar) + hide Dock icon."""
+    """
+    Native AppKit status item (menu bar) + hide Dock icon.
+
+    start() is deferred via QTimer — creating the status item before Qt's
+    Cocoa event loop is running often yields button()=None and no icon.
+    """
     from macos_tray import MacOSTray
 
-    # Hide Dock as early as possible (before the window is shown).
     MacOSTray.hide_dock_icon()
 
     tray = MacOSTray(
@@ -388,7 +433,6 @@ def create_macos_tray(window: ControlWindow):
         title="AmpliFi Teleport for Desktop",
         icon_path=ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None,
     )
-    tray.start()
     return tray
 
 
@@ -397,7 +441,6 @@ def start_ui():
     app = ensure_app()
 
     if IS_MACOS:
-        # Accessory policy before showing any windows keeps the Dock clear.
         try:
             from macos_tray import MacOSTray
 
@@ -407,19 +450,63 @@ def start_ui():
 
     window = ControlWindow()
     _app_state["window"] = window
+    _app_state["tray_fallback"] = None
 
     if IS_MACOS:
+        # Show a Qt tray icon immediately so the menu bar is never empty while
+        # the native AppKit status item is deferred/retried.
+        qt_tray = create_qt_tray(window)
+        _app_state["tray_fallback"] = qt_tray
+
         try:
-            tray = create_macos_tray(window)
+            native = create_macos_tray(window)
+            _app_state["tray"] = native
+
+            def _on_native_ready():
+                # Prefer the native “AT” status item; hide the Qt duplicate.
+                fb = _app_state.get("tray_fallback")
+                if isinstance(fb, QSystemTrayIcon):
+                    fb.hide()
+                    logger.info("Hid Qt tray after native status item became ready")
+
+            def _schedule_with_hide():
+                retry_delays_ms = (0, 100, 250, 500, 1000, 2000)
+
+                def attempt(index: int = 0):
+                    if native.is_running:
+                        _on_native_ready()
+                        return
+                    ok = False
+                    try:
+                        ok = bool(native.start())
+                    except Exception:
+                        logger.exception("macOS status item start failed")
+                    if ok:
+                        logger.info("macOS menu bar status item is up")
+                        _on_native_ready()
+                        return
+                    next_index = index + 1
+                    if next_index < len(retry_delays_ms):
+                        delay = retry_delays_ms[next_index] - retry_delays_ms[index]
+                        QTimer.singleShot(
+                            max(delay, 1), lambda i=next_index: attempt(i)
+                        )
+                        return
+                    logger.warning(
+                        "Native status item did not start; keeping Qt tray icon"
+                    )
+
+                QTimer.singleShot(retry_delays_ms[0], lambda: attempt(0))
+
+            _schedule_with_hide()
         except Exception:
-            logger.exception("Failed to create macOS menu bar status item")
-            tray = None
-            show_toast(
-                "Menu Bar Unavailable",
-                "Could not create the menu bar icon; the control window will stay open.",
+            logger.exception(
+                "Failed to init macOS AppKit status item; Qt tray remains active"
             )
+            _app_state["tray"] = qt_tray
     else:
-        tray = create_windows_tray(window)
+        tray = create_qt_tray(window)
+        _app_state["tray"] = tray
         if not QSystemTrayIcon.isSystemTrayAvailable():
             logger.warning("System tray is not available on this desktop session")
             show_toast(
@@ -427,11 +514,10 @@ def start_ui():
                 "System tray is unavailable; the control window will stay open.",
             )
 
-    _app_state["tray"] = tray
     window.show_and_raise()
 
     if IS_MACOS:
-        # Qt can flip activation policy when the first window appears; re-assert.
+
         def _reassert_accessory():
             try:
                 from macos_tray import MacOSTray
@@ -442,8 +528,9 @@ def start_ui():
 
         QTimer.singleShot(0, _reassert_accessory)
         QTimer.singleShot(500, _reassert_accessory)
+        QTimer.singleShot(1500, _reassert_accessory)
 
-    return app, window, tray
+    return app, window, _app_state.get("tray")
 
 
 def show_control_window():
@@ -455,15 +542,17 @@ def show_control_window():
 
 
 def quit_application():
-    tray = _app_state.get("tray")
-    if tray is not None:
+    for key in ("tray", "tray_fallback"):
+        tray = _app_state.get(key)
+        if tray is None:
+            continue
         try:
             if hasattr(tray, "stop"):
                 tray.stop()
             elif hasattr(tray, "hide"):
                 tray.hide()
         except Exception:
-            logger.exception("Failed to tear down tray / status item")
+            logger.exception("Failed to tear down tray / status item (%s)", key)
     app = _app_state.get("app") or QApplication.instance()
     if app is not None:
         app.quit()

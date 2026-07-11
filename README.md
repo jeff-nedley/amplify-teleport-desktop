@@ -54,13 +54,20 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 The app requests Administrator rights at startup (required for the WireGuard tunnel service).
 
 ### macOS
-1. Look in the **menu bar** (top-right) for the AmpliFi Teleport icon — there is no Dock icon
+1. Look in the **menu bar** (top-right, near the clock) for **AT** or the AmpliFi icon — there is no Dock icon
+   - On notched MacBooks the icon may be inside the menu bar overflow (click the icon next to Control Center)
 2. Click it → **Open Controls** (closing the window hides it; the app stays running in the menu bar)
 3. **First time:** click **Connect**, enter your 5-character Teleport PIN, and wait for the tunnel to connect
 4. Later: use **Connect**, **Disconnect**, or **Delete Existing Configuration** to reset and enter a new PIN
 5. Click **Quit** (menu bar or control window) to fully exit the application
 
 macOS may prompt for an administrator password **once** (at Setup install, or the first time you run from source). After that, Connect / Disconnect should not ask again.
+
+From source on macOS, make sure Cocoa bindings are installed:
+
+```bash
+pip install 'pyobjc-framework-Cocoa>=10.0'
+```
 
 ## Data location
 
