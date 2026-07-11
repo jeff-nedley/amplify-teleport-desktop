@@ -86,6 +86,7 @@ pyinstaller --noconfirm --clean --windowed \
   --icon "${APP_ICON}" \
   --add-data "tray-icon.ico:." \
   --add-data "tray-icon.png:." \
+  --add-data "macos_menubar_helper.py:." \
   --add-data "macos/privileged/wg-helper.sh:macos/privileged" \
   --add-data "macos/privileged/install_privileges.sh:macos/privileged" \
   --hidden-import config \
@@ -98,6 +99,7 @@ pyinstaller --noconfirm --clean --windowed \
   --hidden-import objc \
   --hidden-import AppKit \
   --hidden-import Foundation \
+  --hidden-import PyObjCTools \
   --hidden-import PySide6.QtCore \
   --hidden-import PySide6.QtGui \
   --hidden-import PySide6.QtWidgets \

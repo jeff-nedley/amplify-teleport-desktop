@@ -1,218 +1,141 @@
 """
-Native macOS menu bar (status item) for AmpliFi Teleport.
+macOS helpers for AmpliFi Teleport.
 
-Uses AppKit NSStatusItem so the icon appears in the top-right menu bar.
-Sets NSApplicationActivationPolicyAccessory so the app has no Dock icon.
-
-Important: with Qt (PySide6), the status item must be created after the
-Cocoa app/event loop is alive — otherwise statusItem.button() is None and
-nothing appears. Callers should start() via QTimer.singleShot.
+- hide_dock_icon / activate_app: AppKit bits used by the Qt UI process
+- MenuBarHelper: spawns macos_menubar_helper.py in a separate process so the
+  status item lives in its own NSApplication (Qt cannot destroy it)
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, List, Optional
-
-import objc
-from AppKit import (
-    NSApplication,
-    NSApplicationActivationPolicyAccessory,
-    NSImage,
-    NSMenu,
-    NSMenuItem,
-    NSStatusBar,
-    NSVariableStatusItemLength,
-)
-from Foundation import NSObject
+import subprocess
+import sys
+import threading
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Keep strong refs so PyObjC/GC cannot drop the status item or delegate.
-_RETAINED: List[object] = []
+
+def hide_dock_icon() -> None:
+    """Run as a menu-bar accessory — no Dock icon."""
+    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    logger.info("macOS activation policy set to Accessory (no Dock icon)")
 
 
-class _TrayDelegate(NSObject):
-    """Receives NSMenu item actions from the status item."""
+def activate_app() -> None:
+    """Bring the app to the foreground (e.g. when opening controls from tray)."""
+    try:
+        from AppKit import NSApplication
 
-    callbacks = objc.ivar()
-
-    def initWithCallbacks_(self, callbacks):  # noqa: N802
-        self = objc.super(_TrayDelegate, self).init()
-        if self is None:
-            return None
-        self.callbacks = callbacks
-        return self
-
-    def openControls_(self, _sender):  # noqa: N802
-        callback = (self.callbacks or {}).get("open")
-        if callback:
-            callback()
-
-    def quitApp_(self, _sender):  # noqa: N802
-        callback = (self.callbacks or {}).get("quit")
-        if callback:
-            callback()
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception:
+        logger.exception("Failed to activate macOS application")
 
 
-class MacOSTray:
-    """Menu-bar status item with Open Controls / Quit."""
+def _helper_script_path() -> str:
+    from platform_utils import resource_path
+
+    return resource_path("macos_menubar_helper.py")
+
+
+class MenuBarHelper:
+    """Owns the separate menu-bar helper process."""
 
     def __init__(
         self,
         *,
         on_open: Callable[[], None],
         on_quit: Callable[[], None],
-        title: str = "AmpliFi Teleport",
-        icon_path: Optional[str] = None,
     ) -> None:
         self._on_open = on_open
         self._on_quit = on_quit
-        self._title = title
-        self._icon_path = icon_path
-        self._status_item = None
-        self._delegate = None
-        self._menu = None
-        self._running = False
-        self._attempts = 0
-
-    @staticmethod
-    def hide_dock_icon() -> None:
-        """Run as a menu-bar accessory — no Dock icon."""
-        app = NSApplication.sharedApplication()
-        app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-        logger.info("macOS activation policy set to Accessory (no Dock icon)")
+        self._proc: Optional[subprocess.Popen] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stopping = False
 
     @property
     def is_running(self) -> bool:
-        return self._running
+        return self._proc is not None and self._proc.poll() is None
 
     def start(self) -> bool:
-        """
-        Create the menu bar status item.
-
-        Returns True when the item is visible. Safe to call repeatedly until
-        it succeeds (used for deferred/retry from Qt's event loop).
-        """
-        if self._running:
+        if self.is_running:
             return True
 
-        self._attempts += 1
-        try:
-            self.hide_dock_icon()
-        except Exception:
-            logger.exception("Failed to set accessory activation policy")
-
-        try:
-            status_bar = NSStatusBar.systemStatusBar()
-            # Variable length + title guarantees a visible glyph even if the
-            # image fails to load (Square length + empty image = invisible).
-            self._status_item = status_bar.statusItemWithLength_(
-                float(NSVariableStatusItemLength)
-            )
-            _RETAINED.append(self._status_item)
-
-            button = self._status_item.button()
-            if button is None:
-                logger.warning(
-                    "NSStatusItem.button() is None (attempt %s) — will retry",
-                    self._attempts,
-                )
-                try:
-                    status_bar.removeStatusItem_(self._status_item)
-                except Exception:
-                    pass
-                self._status_item = None
-                return False
-
-            # Always set a text title so something is visible in the menu bar.
-            button.setTitle_("AT")
-            button.setToolTip_(self._title)
-
-            icon = self._load_icon()
-            if icon is not None:
-                button.setImage_(icon)
-                # Keep title as well until we know the image is readable;
-                # image+title is fine for VariableStatusItemLength.
-                try:
-                    button.setImagePosition_(1)  # NSImageLeft
-                except Exception:
-                    pass
-
-            self._delegate = _TrayDelegate.alloc().initWithCallbacks_(
-                {"open": self._handle_open, "quit": self._handle_quit}
-            )
-            _RETAINED.append(self._delegate)
-
-            menu = NSMenu.alloc().init()
-            open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Open Controls", "openControls:", ""
-            )
-            open_item.setTarget_(self._delegate)
-            menu.addItem_(open_item)
-            menu.addItem_(NSMenuItem.separatorItem())
-            quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Quit", "quitApp:", ""
-            )
-            quit_item.setTarget_(self._delegate)
-            menu.addItem_(quit_item)
-
-            self._menu = menu
-            _RETAINED.append(menu)
-            self._status_item.setMenu_(menu)
-            self._running = True
-            logger.info(
-                "macOS menu bar status item started (attempt %s, title=AT)",
-                self._attempts,
-            )
-            return True
-        except Exception:
-            logger.exception(
-                "Failed to create macOS status item (attempt %s)", self._attempts
-            )
-            self._status_item = None
+        script = _helper_script_path()
+        if not os.path.exists(script):
+            logger.error("Menu bar helper script missing: %s", script)
             return False
 
+        try:
+            self._stopping = False
+            self._proc = subprocess.Popen(
+                [sys.executable, "-u", script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+            )
+        except Exception:
+            logger.exception("Failed to launch menu bar helper")
+            self._proc = None
+            return False
+
+        self._thread = threading.Thread(
+            target=self._read_loop,
+            name="amplifi-menubar-helper",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info("Started macOS menu bar helper pid=%s", self._proc.pid)
+        return True
+
     def stop(self) -> None:
-        if not self._running and self._status_item is None:
+        self._stopping = True
+        proc = self._proc
+        self._proc = None
+        if proc is None:
             return
         try:
-            if self._status_item is not None:
-                NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
         except Exception:
-            logger.exception("Failed to remove status item")
-        self._status_item = None
-        self._delegate = None
-        self._menu = None
-        self._running = False
+            logger.exception("Failed to stop menu bar helper")
 
     def hide(self) -> None:
-        """Compatibility with QSystemTrayIcon.hide() used on quit."""
         self.stop()
 
-    def _handle_open(self) -> None:
+    def _read_loop(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
         try:
-            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            for raw in proc.stdout:
+                line = (raw or "").strip()
+                if not line:
+                    continue
+                logger.info("Menu bar helper: %s", line)
+                if line == "OPEN":
+                    self._on_open()
+                elif line == "QUIT":
+                    self._on_quit()
+                    break
+                elif line.startswith("ERROR"):
+                    logger.error("Menu bar helper error: %s", line)
         except Exception:
-            pass
-        self._on_open()
-
-    def _handle_quit(self) -> None:
-        self._on_quit()
-
-    def _load_icon(self) -> Optional[object]:
-        if not self._icon_path or not os.path.exists(self._icon_path):
-            return None
-        try:
-            image = NSImage.alloc().initWithContentsOfFile_(self._icon_path)
-            if image is None:
-                return None
-            image.setSize_((18.0, 18.0))
-            # Template images adapt to light/dark menu bars.
-            image.setTemplate_(True)
-            _RETAINED.append(image)
-            return image
-        except Exception:
-            logger.exception("Failed to load menu bar icon from %s", self._icon_path)
-            return None
+            if not self._stopping:
+                logger.exception("Menu bar helper reader failed")
+        finally:
+            if not self._stopping and self._proc is proc:
+                code = proc.poll()
+                logger.warning("Menu bar helper exited (code=%s)", code)
