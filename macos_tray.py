@@ -49,20 +49,14 @@ def set_dock_icon(icon_path: Optional[str] = None) -> bool:
     """
     Set the Dock / app icon to the AmpliFi Teleport artwork.
 
-    Running from source uses the python.org binary, so macOS defaults to the
-    Python Dock icon. setApplicationIconImage alone is often overwritten when
-    the activation policy flips to Regular — we also pin an NSImageView onto
-    the Dock tile and keep strong Python refs to the image/view.
+    Running from source uses the python.org / Homebrew python binary, so macOS
+    defaults to the Python Dock icon. Qt also tends to reset the tile after
+    show(). We setApplicationIconImage, pin an NSImageView on the Dock tile,
+    and keep strong Python refs so the artwork sticks.
     """
     global _DOCK_ICON_IMAGE, _DOCK_ICON_VIEW, _DOCK_ICON_PATH
 
-    from AppKit import (
-        NSApplication,
-        NSImage,
-        NSImageScaleProportionallyUpOrDown,
-        NSImageView,
-        NSMakeRect,
-    )
+    from AppKit import NSApplication, NSImage, NSImageView, NSMakeRect
     from Foundation import NSData
 
     path = _resolve_icon_path(icon_path) or _resolve_icon_path(_DOCK_ICON_PATH)
@@ -72,6 +66,11 @@ def set_dock_icon(icon_path: Optional[str] = None) -> bool:
 
     image = NSImage.alloc().initWithContentsOfFile_(path)
     if image is None:
+        try:
+            image = NSImage.alloc().initByReferencingFile_(path)
+        except Exception:
+            image = None
+    if image is None:
         data = NSData.dataWithContentsOfFile_(path)
         if data is not None:
             image = NSImage.alloc().initWithData_(data)
@@ -79,11 +78,17 @@ def set_dock_icon(icon_path: Optional[str] = None) -> bool:
         logger.error("Failed to load Dock icon from %s", path)
         return False
 
-    # Prefer a large representation for the Dock tile.
+    # Keep full pixel dimensions for a sharp Dock tile (don't shrink to 18pt).
     try:
-        image.setSize_((256.0, 256.0))
+        reps = image.representations()
+        if reps:
+            best = max(reps, key=lambda r: int(r.pixelsWide()) * int(r.pixelsHigh()))
+            image.setSize_((float(best.pixelsWide()), float(best.pixelsHigh())))
     except Exception:
-        pass
+        try:
+            image.setSize_((256.0, 256.0))
+        except Exception:
+            pass
 
     _DOCK_ICON_PATH = path
     _DOCK_ICON_IMAGE = image
@@ -93,8 +98,17 @@ def set_dock_icon(icon_path: Optional[str] = None) -> bool:
 
     try:
         tile = app.dockTile()
+        # Clear any previous custom view, then pin ours.
+        try:
+            tile.setContentView_(None)
+        except Exception:
+            pass
         view = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, 256, 256))
-        view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        try:
+            # NSImageScaleProportionallyUpOrDown == 3
+            view.setImageScaling_(3)
+        except Exception:
+            pass
         view.setImage_(image)
         _DOCK_ICON_VIEW = view
         tile.setContentView_(view)
@@ -104,6 +118,21 @@ def set_dock_icon(icon_path: Optional[str] = None) -> bool:
 
     logger.info("Dock / application icon set from %s", path)
     return True
+
+
+def schedule_dock_icon_refresh(icon_path: Optional[str] = None, *, delays_ms=None) -> None:
+    """Re-apply the Dock icon on the Qt event loop (fights Qt resets)."""
+    try:
+        from PySide6.QtCore import QTimer
+    except Exception:
+        set_dock_icon(icon_path)
+        return
+
+    path = icon_path
+    set_dock_icon(path)
+    for delay in delays_ms or (0, 50, 100, 250, 500, 1000, 2000):
+        QTimer.singleShot(delay, lambda p=path: set_dock_icon(p))
+
 
 
 def present_app() -> None:

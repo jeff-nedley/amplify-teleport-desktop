@@ -303,6 +303,35 @@ class ControlWindow(QMainWindow):
             except Exception:
                 logger.exception("Failed to restore Accessory policy on hide")
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if IS_MACOS:
+            try:
+                from macos_tray import schedule_dock_icon_refresh
+
+                icon_path = ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None
+                schedule_dock_icon_refresh(icon_path)
+            except Exception:
+                logger.exception("Failed to refresh Dock icon in showEvent")
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # Re-assert when the window becomes active — Qt may have just reset the tile.
+        if not IS_MACOS:
+            return
+        try:
+            from PySide6.QtCore import QEvent
+
+            if event.type() in (
+                QEvent.Type.WindowActivate,
+                QEvent.Type.ActivationChange,
+            ):
+                from macos_tray import set_dock_icon
+
+                set_dock_icon(ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None)
+        except Exception:
+            pass
+
     def show_and_raise(self):
         if IS_MACOS:
             try:
@@ -328,15 +357,11 @@ class ControlWindow(QMainWindow):
         self.refresh_buttons()
 
         if IS_MACOS:
-            # Qt often resets the Dock tile to the Python icon after show().
             try:
-                from macos_tray import set_dock_icon
+                from macos_tray import schedule_dock_icon_refresh
 
                 icon_path = ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None
-                set_dock_icon(icon_path)
-                QTimer.singleShot(0, lambda p=icon_path: set_dock_icon(p))
-                QTimer.singleShot(100, lambda p=icon_path: set_dock_icon(p))
-                QTimer.singleShot(400, lambda p=icon_path: set_dock_icon(p))
+                schedule_dock_icon_refresh(icon_path)
             except Exception:
                 logger.exception("Failed to re-apply Dock icon after show")
 
