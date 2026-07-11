@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -303,12 +303,38 @@ class ControlWindow(QMainWindow):
         # Hide to tray instead of quitting
         event.ignore()
         self.hide()
+        if IS_MACOS:
+            # Restore menu-bar-only mode (no Dock) after the window is gone.
+            try:
+                from macos_tray import hide_dock_icon
+
+                # Defer so hide() finishes first.
+                QTimer.singleShot(0, hide_dock_icon)
+            except Exception:
+                logger.exception("Failed to restore Accessory policy on hide")
 
     def show_and_raise(self):
+        if IS_MACOS:
+            try:
+                from macos_tray import present_app
+
+                # Accessory apps cannot reliably activate hidden windows.
+                present_app()
+            except Exception:
+                logger.exception("Failed to present macOS app for window show")
+
+        self.setWindowState(
+            self.windowState() & ~Qt.WindowState.WindowMinimized
+        )
+        self.showNormal()
         self.show()
         self.raise_()
         self.activateWindow()
+        app = QApplication.instance()
+        if app is not None:
+            app.setActiveWindow(self)
         self.refresh_buttons()
+        logger.info("Control window shown/raised (visible=%s)", self.isVisible())
 
     def _clear_body(self):
         while self.body_layout.count():
@@ -416,9 +442,9 @@ def create_qt_tray(window: ControlWindow) -> QSystemTrayIcon:
     def _open():
         if IS_MACOS:
             try:
-                from macos_tray import activate_app
+                from macos_tray import present_app
 
-                activate_app()
+                present_app()
             except Exception:
                 pass
         window.show_and_raise()
@@ -450,6 +476,13 @@ def create_qt_tray(window: ControlWindow) -> QSystemTrayIcon:
     return tray
 
 
+class _MenuBarBridge(QObject):
+    """Thread-safe bridge from the menu-bar helper reader → Qt main thread."""
+
+    open_requested = Signal()
+    quit_requested = Signal()
+
+
 def _start_macos_menubar(window: ControlWindow):
     """
     Launch the status item in a separate process.
@@ -457,23 +490,18 @@ def _start_macos_menubar(window: ControlWindow):
     Qt and in-process AppKit NSStatusItem fight over NSApplication; a child
     process with its own Cocoa run loop is the reliable approach.
     """
-    from macos_tray import MenuBarHelper, activate_app, hide_dock_icon
+    from macos_tray import MenuBarHelper, hide_dock_icon
 
-    def on_open():
-        # Reader thread → hop back onto the Qt GUI thread.
-        def _do():
-            try:
-                activate_app()
-            except Exception:
-                pass
-            window.show_and_raise()
+    bridge = _MenuBarBridge()
+    bridge.open_requested.connect(window.show_and_raise)
+    bridge.quit_requested.connect(quit_application)
+    # Keep the bridge alive for the app lifetime.
+    _app_state["menubar_bridge"] = bridge
 
-        QTimer.singleShot(0, _do)
-
-    def on_quit():
-        QTimer.singleShot(0, quit_application)
-
-    helper = MenuBarHelper(on_open=on_open, on_quit=on_quit)
+    helper = MenuBarHelper(
+        on_open=lambda: bridge.open_requested.emit(),
+        on_quit=lambda: bridge.quit_requested.emit(),
+    )
     if not helper.start():
         raise RuntimeError("Failed to start macOS menu bar helper process")
 
@@ -525,8 +553,12 @@ def start_ui():
     window.show_and_raise()
 
     if IS_MACOS:
-
+        # After the first show, return to Accessory so the Dock stays clear.
         def _rehide_dock():
+            if window.isVisible():
+                # Keep Regular while the window is up so it stays interactive;
+                # Dock may briefly show — hide again when the window closes.
+                return
             try:
                 from macos_tray import hide_dock_icon
 
@@ -534,8 +566,7 @@ def start_ui():
             except Exception:
                 pass
 
-        QTimer.singleShot(300, _rehide_dock)
-        QTimer.singleShot(1500, _rehide_dock)
+        QTimer.singleShot(500, _rehide_dock)
 
     return app, window, _app_state.get("tray")
 

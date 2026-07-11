@@ -1,7 +1,7 @@
 """
 macOS helpers for AmpliFi Teleport.
 
-- hide_dock_icon / activate_app: AppKit bits used by the Qt UI process
+- hide_dock_icon / present_app / activate_app: AppKit bits for the Qt UI process
 - MenuBarHelper: spawns macos_menubar_helper.py in a separate process so the
   status item lives in its own NSApplication (Qt cannot destroy it)
 """
@@ -27,8 +27,23 @@ def hide_dock_icon() -> None:
     logger.info("macOS activation policy set to Accessory (no Dock icon)")
 
 
+def present_app() -> None:
+    """
+    Allow a hidden window to come to the front.
+
+    Accessory policy (no Dock) prevents inactive apps from activating their
+    windows. Temporarily switch to Regular, then activate.
+    """
+    from AppKit import NSApplication, NSApplicationActivationPolicyRegular
+
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    app.activateIgnoringOtherApps_(True)
+    logger.info("macOS activation policy set to Regular (presenting window)")
+
+
 def activate_app() -> None:
-    """Bring the app to the foreground (e.g. when opening controls from tray)."""
+    """Bring the app to the foreground without changing activation policy."""
     try:
         from AppKit import NSApplication
 
