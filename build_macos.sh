@@ -33,7 +33,6 @@ if [[ ! -f "${ICON_ICO}" ]]; then
   exit 1
 fi
 
-# Ensure PNG exists (needed for macOS tray / window icons)
 if [[ ! -f "${ICON_PNG}" ]]; then
   echo "Generating tray-icon.png from tray-icon.ico..."
   python3 - <<'PY'
@@ -54,7 +53,6 @@ print("Wrote tray-icon.png", best.size)
 PY
 fi
 
-# Prefer a real .icns for the .app bundle icon (PyInstaller / macOS expectation)
 ICON_ICNS="${WORK_DIR}/tray-icon.icns"
 mkdir -p "${WORK_DIR}/icon.iconset"
 python3 - <<'PY'
@@ -80,10 +78,6 @@ else
   APP_ICON="${ICON_PNG}"
 fi
 
-# IMPORTANT: keep --specpath at the project root.
-# PyInstaller resolves --add-data sources relative to the .spec location.
-# Putting the spec under build/pyinstaller_app made it look for:
-#   build/pyinstaller_app/tray-icon.ico
 pyinstaller --noconfirm --clean --windowed \
   --name "${APP_NAME}" \
   --distpath "${ROOT}/dist" \
@@ -98,15 +92,14 @@ pyinstaller --noconfirm --clean --windowed \
   --hidden-import notifications \
   --hidden-import platform_utils \
   --hidden-import teleport \
-  --hidden-import macos_tray \
-  --hidden-import plyer.platforms.darwin.notification \
-  --hidden-import AppKit \
-  --hidden-import Foundation \
+  --hidden-import PySide6.QtCore \
+  --hidden-import PySide6.QtGui \
+  --hidden-import PySide6.QtWidgets \
+  --collect-all PySide6 \
   main.py
 
-# Clean generated spec from repo root (kept out of git via *.spec)
 rm -f "${ROOT}/${APP_NAME}.spec"
 
 echo ""
 echo "Built: dist/${APP_NAME}.app"
-echo "Next: ./build_macos_dmg.sh --skip-app-build   # creates Setup .dmg with WireGuard auto-install"
+echo "Next: ./build_macos_dmg.sh --skip-app-build"

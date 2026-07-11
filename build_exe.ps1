@@ -15,5 +15,9 @@ pyinstaller --onefile --windowed `
   --hidden-import notifications `
   --hidden-import platform_utils `
   --hidden-import teleport `
+  --hidden-import PySide6.QtCore `
+  --hidden-import PySide6.QtGui `
+  --hidden-import PySide6.QtWidgets `
+  --collect-all PySide6 `
   --hidden-import plyer.platforms.win.notification `
   main.py

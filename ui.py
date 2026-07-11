@@ -1,670 +1,439 @@
 # Copyright (c) 2026 Jeff Nedley
 # Licensed under the MIT License (see LICENSE for details)
 
-import os
-import logging
-import tkinter as tk
-from tkinter import font as tkfont
+"""Cross-platform UI built with PySide6 (Qt) — identical look on Windows and macOS."""
 
-from config import TOKEN_FILE, UUID_FILE, CONFIG_PATH, ICON_PATH_ICO, ICON_PATH_PNG
-from platform_utils import IS_MACOS, IS_WINDOWS, corner_radius, ui_font
-from tunnel import generate_config, activate_tunnel, deactivate_tunnel, is_tunnel_active
+from __future__ import annotations
+
+import logging
+import os
+import sys
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QFont, QIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
+
+from config import CONFIG_PATH, ICON_PATH_ICO, ICON_PATH_PNG, TOKEN_FILE, UUID_FILE
 from notifications import show_toast
+from platform_utils import IS_WINDOWS
+from tunnel import (
+    activate_tunnel,
+    deactivate_tunnel,
+    generate_config,
+    is_tunnel_active,
+)
 
 logger = logging.getLogger("AmpliFi Teleport for Desktop")
 
-# Shared palette — same brand look on both platforms
 COLORS = {
     "bg": "#181818",
     "header": "#1a9aff",
     "button": "#1a9aff",
     "button_hover": "#0d6efd",
-    "muted_button": "#444444",
-    "muted_hover": "#555555",
     "danger": "#e74c3c",
     "danger_hover": "#c0392b",
     "text": "#ffffff",
     "muted_text": "#888888",
     "entry_bg": "#2d2d2d",
+    "entry_border": "#3a3a3a",
 }
 
-# Singleton control window so tray / menu-bar can show/hide without nested mainloops
-_control_app = {
-    "root": None,
-    "content_frame": None,
-    "icon": None,
-    "quit_callback": None,
-    "toolkit": None,  # "tk" | "ctk"
+APP_STYLESHEET = f"""
+QMainWindow, QDialog, QWidget#central {{
+    background-color: {COLORS["bg"]};
+    color: {COLORS["text"]};
+}}
+QLabel {{
+    color: {COLORS["text"]};
+    background: transparent;
+}}
+QLabel#headerTitle {{
+    color: {COLORS["text"]};
+    font-size: 18px;
+    font-weight: 700;
+}}
+QLabel#versionLabel {{
+    color: {COLORS["muted_text"]};
+    font-size: 11px;
+}}
+QLabel#dialogTitle {{
+    font-size: 16px;
+    font-weight: 700;
+}}
+QFrame#headerBar {{
+    background-color: {COLORS["header"]};
+}}
+QPushButton {{
+    background-color: {COLORS["button"]};
+    color: {COLORS["text"]};
+    border: none;
+    border-radius: 14px;
+    padding: 14px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    min-height: 22px;
+}}
+QPushButton:hover {{
+    background-color: {COLORS["button_hover"]};
+}}
+QPushButton:disabled {{
+    background-color: #555555;
+    color: #aaaaaa;
+}}
+QPushButton#dangerButton {{
+    background-color: {COLORS["danger"]};
+}}
+QPushButton#dangerButton:hover {{
+    background-color: {COLORS["danger_hover"]};
+}}
+QPushButton#mutedButton {{
+    background-color: #444444;
+}}
+QPushButton#mutedButton:hover {{
+    background-color: #555555;
+}}
+QLineEdit {{
+    background-color: {COLORS["entry_bg"]};
+    color: {COLORS["text"]};
+    border: 1px solid {COLORS["entry_border"]};
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 16px;
+    selection-background-color: {COLORS["header"]};
+}}
+QMessageBox {{
+    background-color: {COLORS["bg"]};
+}}
+"""
+
+_app_state = {
+    "app": None,
+    "window": None,
+    "tray": None,
 }
 
-# CustomTkinter only where it renders reliably (Windows).
-# macOS uses classic Tk — CustomTkinter often paints a blank window on Mac Tk builds.
-USE_CTK = not IS_MACOS
-if USE_CTK:
-    import customtkinter as ctk
+
+def _app_icon() -> QIcon:
+    if IS_WINDOWS and os.path.exists(ICON_PATH_ICO):
+        return QIcon(ICON_PATH_ICO)
+    if os.path.exists(ICON_PATH_PNG):
+        return QIcon(ICON_PATH_PNG)
+    return QIcon()
 
 
-def _set_window_icon(window):
-    """Apply the correct window icon API per OS."""
-    try:
-        if IS_WINDOWS and os.path.exists(ICON_PATH_ICO):
-            window.iconbitmap(ICON_PATH_ICO)
-            window.after(300, lambda: window.iconbitmap(ICON_PATH_ICO))
-        elif IS_MACOS:
-            # Avoid tk.PhotoImage(PNG) on macOS — it can break widget painting entirely.
-            return
-        elif os.path.exists(ICON_PATH_PNG):
-            icon_image = tk.PhotoImage(file=ICON_PATH_PNG)
-            window.iconphoto(True, icon_image)
-            window._amplifi_icon_ref = icon_image
-    except Exception:
-        logger.debug("Could not set window icon", exc_info=True)
+def ensure_app() -> QApplication:
+    app = QApplication.instance()
+    if app is None:
+        # High-DPI friendly defaults
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+        app.setApplicationName("AmpliFi Teleport for Desktop")
+        app.setOrganizationName("AmpliFiTeleport")
+        app.setWindowIcon(_app_icon())
+        app.setStyleSheet(APP_STYLESHEET)
+        # Prefer a cross-platform font that Qt maps well on Win/Mac
+        app.setFont(QFont("Segoe UI" if IS_WINDOWS else "Helvetica Neue", 13))
+    _app_state["app"] = app
+    return app
 
 
-def _center_window(window, width, height):
-    window.update_idletasks()
-    x = (window.winfo_screenwidth() // 2) - (width // 2)
-    y = (window.winfo_screenheight() // 2) - (height // 2)
-    window.geometry(f"{width}x{height}+{x}+{y}")
+class PinDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Teleport PIN Entry")
+        self.setModal(True)
+        self.setFixedSize(350, 200)
+        self.setWindowIcon(_app_icon())
 
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
 
-def _tk_font(size, weight="normal"):
-    family = "Helvetica"
-    try:
-        available = set(tkfont.families())
-        for candidate in ("Helvetica Neue", "Helvetica", "Lucida Grande", "Arial"):
-            if candidate in available:
-                family = candidate
-                break
-    except Exception:
-        pass
-    return (family, size, "bold") if weight == "bold" else (family, size)
+        title = QLabel("Enter Teleport PIN")
+        title.setObjectName("dialogTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
 
+        self.pin_entry = QLineEdit()
+        self.pin_entry.setMaxLength(5)
+        self.pin_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pin_entry.setPlaceholderText("•••••")
+        layout.addWidget(self.pin_entry)
 
-def _make_tk_button(parent, text, bg, command, width=28):
-    btn = tk.Button(
-        parent,
-        text=text,
-        command=command,
-        font=_tk_font(14, "bold"),
-        fg=COLORS["text"],
-        bg=bg,
-        activeforeground=COLORS["text"],
-        activebackground=bg,
-        relief="flat",
-        bd=0,
-        highlightthickness=0,
-        padx=12,
-        pady=14,
-        cursor="hand2",
-        width=width,
-    )
-    return btn
+        self.error_label = QLabel("")
+        self.error_label.setStyleSheet("color: #ff5555;")
+        self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.error_label)
 
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("mutedButton")
+        cancel_btn.clicked.connect(self.reject)
+        submit_btn = QPushButton("Submit")
+        submit_btn.clicked.connect(self._submit)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(submit_btn)
+        layout.addLayout(buttons)
 
-def custom_pin_dialog(parent=None):
-    if USE_CTK:
-        return _ctk_pin_dialog(parent)
-    return _tk_pin_dialog(parent)
+        self.pin_entry.returnPressed.connect(self._submit)
+        self.pin_entry.setFocus()
 
-
-def custom_confirm_dialog(title, message, parent=None):
-    if USE_CTK:
-        return _ctk_confirm_dialog(title, message, parent)
-    return _tk_confirm_dialog(title, message, parent)
-
-
-def _tk_pin_dialog(parent=None):
-    dialog = tk.Toplevel(parent) if parent else tk.Toplevel()
-    dialog.title("Teleport PIN Entry")
-    dialog.configure(bg=COLORS["bg"])
-    dialog.resizable(False, False)
-    _center_window(dialog, 350, 180)
-    if parent:
-        dialog.transient(parent)
-    dialog.grab_set()
-    dialog.focus_set()
-
-    tk.Label(
-        dialog,
-        text="Enter Teleport PIN",
-        font=_tk_font(16, "bold"),
-        fg=COLORS["text"],
-        bg=COLORS["bg"],
-    ).pack(pady=(20, 5))
-
-    def validate(P):
-        return len(P) <= 5
-
-    vcmd = (dialog.register(validate), "%P")
-    pin_entry = tk.Entry(
-        dialog,
-        font=_tk_font(16),
-        bg=COLORS["entry_bg"],
-        fg=COLORS["text"],
-        insertbackground=COLORS["text"],
-        justify="center",
-        relief="flat",
-        validate="key",
-        validatecommand=vcmd,
-    )
-    pin_entry.pack(ipady=10, padx=35, fill="x")
-    pin_entry.focus()
-
-    result = [None]
-
-    def submit():
-        pin = pin_entry.get().strip()
+    def _submit(self):
+        pin = self.pin_entry.text().strip()
         if len(pin) != 5:
-            tk.Label(
-                dialog, text="PIN must be exactly 5 characters", fg="red", bg=COLORS["bg"]
-            ).pack(pady=5)
+            self.error_label.setText("PIN must be exactly 5 characters")
             return
-        result[0] = pin
-        dialog.destroy()
+        self.accept()
 
-    def cancel():
-        result[0] = None
-        dialog.destroy()
-
-    button_frame = tk.Frame(dialog, bg=COLORS["bg"])
-    button_frame.pack(pady=15)
-    tk.Button(
-        button_frame,
-        text="Cancel",
-        command=cancel,
-        font=_tk_font(13),
-        fg=COLORS["text"],
-        bg=COLORS["muted_button"],
-        relief="flat",
-        padx=20,
-        pady=8,
-        width=10,
-    ).pack(side="left", padx=10)
-    tk.Button(
-        button_frame,
-        text="Submit",
-        command=submit,
-        font=_tk_font(13),
-        fg=COLORS["text"],
-        bg=COLORS["button"],
-        relief="flat",
-        padx=20,
-        pady=8,
-        width=10,
-    ).pack(side="right", padx=10)
-
-    dialog.bind("<Return>", lambda _e: submit())
-    dialog.bind("<Escape>", lambda _e: cancel())
-    dialog.wait_window()
-    return result[0]
+    def pin_value(self) -> str | None:
+        if self.result() == QDialog.DialogCode.Accepted:
+            return self.pin_entry.text().strip()
+        return None
 
 
-def _tk_confirm_dialog(title, message, parent=None):
-    confirm = tk.Toplevel(parent) if parent else tk.Toplevel()
-    confirm.title(title)
-    confirm.configure(bg=COLORS["bg"])
-    confirm.resizable(False, False)
-    _center_window(confirm, 350, 180)
-    if parent:
-        confirm.transient(parent)
-    confirm.grab_set()
-    confirm.focus_set()
+class ControlWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("AmpliFi Teleport for Desktop")
+        self.setFixedSize(350, 340)
+        self.setWindowIcon(_app_icon())
 
-    tk.Label(
-        confirm,
-        text=message,
-        font=_tk_font(14),
-        fg=COLORS["text"],
-        bg=COLORS["bg"],
-        wraplength=300,
-        justify="center",
-    ).pack(pady=20)
+        central = QWidget()
+        central.setObjectName("central")
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-    result = [False]
+        header = QFrame()
+        header.setObjectName("headerBar")
+        header.setFixedHeight(52)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("AmpliFi Teleport for Desktop")
+        title.setObjectName("headerTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_layout.addWidget(title)
+        root.addWidget(header)
 
-    def yes():
-        result[0] = True
-        confirm.destroy()
+        body = QWidget()
+        self.body_layout = QVBoxLayout(body)
+        self.body_layout.setContentsMargins(24, 16, 24, 8)
+        self.body_layout.setSpacing(10)
+        self.body_layout.addStretch(1)
+        root.addWidget(body, stretch=1)
 
-    def no():
-        result[0] = False
-        confirm.destroy()
+        version = QLabel("Version 1.0.0")
+        version.setObjectName("versionLabel")
+        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(version)
+        root.addSpacing(8)
 
-    button_frame = tk.Frame(confirm, bg=COLORS["bg"])
-    button_frame.pack(pady=10)
-    tk.Button(
-        button_frame,
-        text="No",
-        command=no,
-        font=_tk_font(13),
-        fg=COLORS["text"],
-        bg=COLORS["muted_button"],
-        relief="flat",
-        padx=20,
-        pady=8,
-        width=10,
-    ).pack(side="left", padx=10)
-    tk.Button(
-        button_frame,
-        text="Yes",
-        command=yes,
-        font=_tk_font(13),
-        fg=COLORS["text"],
-        bg=COLORS["button"],
-        relief="flat",
-        padx=20,
-        pady=8,
-        width=10,
-    ).pack(side="right", padx=10)
+        self._busy = False
+        self.refresh_buttons()
 
-    confirm.bind("<Escape>", lambda _e: no())
-    confirm.wait_window()
-    return result[0]
+    def closeEvent(self, event):
+        # Hide to tray instead of quitting
+        event.ignore()
+        self.hide()
 
+    def show_and_raise(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.refresh_buttons()
 
-def _ctk_pin_dialog(parent=None):
-    dialog = ctk.CTkToplevel(parent) if parent else ctk.CTkToplevel()
-    dialog.title("Teleport PIN Entry")
-    dialog.geometry("350x180")
-    dialog.resizable(False, False)
-    dialog.configure(fg_color=COLORS["bg"])
-    _set_window_icon(dialog)
-    _center_window(dialog, 350, 180)
-    if parent:
-        dialog.transient(parent)
-    dialog.grab_set()
-    dialog.focus_set()
+    def _clear_body(self):
+        while self.body_layout.count():
+            item = self.body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-    ctk.CTkLabel(
-        dialog, text="Enter Teleport PIN", font=ui_font(16, "bold"), text_color=COLORS["text"]
-    ).pack(pady=(20, 5))
+    def refresh_buttons(self):
+        self._clear_body()
+        self.body_layout.addStretch(1)
 
-    def validate(P):
-        return len(P) <= 5
+        active = is_tunnel_active(retries=1, delay=0)
 
-    vcmd = (dialog.register(validate), "%P")
-    pin_entry = ctk.CTkEntry(
-        dialog,
-        width=280,
-        height=40,
-        font=ui_font(16),
-        fg_color=COLORS["entry_bg"],
-        text_color=COLORS["text"],
-        justify="center",
-        validate="key",
-        validatecommand=vcmd,
-        corner_radius=corner_radius(8),
-    )
-    pin_entry.pack(pady=(0, 15))
-    pin_entry.focus()
+        if not active:
+            self._add_action_button("Connect", self._on_connect)
+        else:
+            self._add_action_button("Disconnect", self._on_disconnect)
 
-    result = [None]
-
-    def submit():
-        pin = pin_entry.get().strip()
-        if len(pin) != 5:
-            ctk.CTkLabel(dialog, text="PIN must be exactly 5 characters", text_color="red").pack(
-                pady=5
-            )
-            return
-        result[0] = pin
-        dialog.destroy()
-
-    def cancel():
-        result[0] = None
-        dialog.destroy()
-
-    button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-    button_frame.pack(pady=10)
-    ctk.CTkButton(
-        button_frame,
-        text="Cancel",
-        width=120,
-        fg_color=COLORS["muted_button"],
-        hover_color=COLORS["muted_hover"],
-        text_color=COLORS["text"],
-        corner_radius=corner_radius(10),
-        command=cancel,
-    ).pack(side="left", padx=10)
-    ctk.CTkButton(
-        button_frame,
-        text="Submit",
-        width=120,
-        fg_color=COLORS["button"],
-        hover_color=COLORS["button_hover"],
-        text_color=COLORS["text"],
-        corner_radius=corner_radius(10),
-        command=submit,
-    ).pack(side="right", padx=10)
-
-    dialog.bind("<Return>", lambda _e: submit())
-    dialog.bind("<Escape>", lambda _e: cancel())
-    dialog.wait_window()
-    return result[0]
-
-
-def _ctk_confirm_dialog(title, message, parent=None):
-    confirm_dialog = ctk.CTkToplevel(parent) if parent else ctk.CTkToplevel()
-    confirm_dialog.title(title)
-    confirm_dialog.geometry("350x180")
-    confirm_dialog.resizable(False, False)
-    confirm_dialog.configure(fg_color=COLORS["bg"])
-    _set_window_icon(confirm_dialog)
-    _center_window(confirm_dialog, 350, 180)
-    if parent:
-        confirm_dialog.transient(parent)
-    confirm_dialog.grab_set()
-    confirm_dialog.focus_set()
-
-    ctk.CTkLabel(
-        confirm_dialog,
-        text=message,
-        font=ui_font(14),
-        text_color=COLORS["text"],
-        wraplength=300,
-    ).pack(pady=20)
-
-    button_frame = ctk.CTkFrame(confirm_dialog, fg_color="transparent")
-    button_frame.pack(pady=10)
-    result = [False]
-
-    def yes():
-        result[0] = True
-        confirm_dialog.destroy()
-
-    def no():
-        result[0] = False
-        confirm_dialog.destroy()
-
-    ctk.CTkButton(
-        button_frame,
-        text="No",
-        width=120,
-        fg_color=COLORS["muted_button"],
-        hover_color=COLORS["muted_hover"],
-        text_color=COLORS["text"],
-        corner_radius=corner_radius(10),
-        command=no,
-    ).pack(side="left", padx=10)
-    ctk.CTkButton(
-        button_frame,
-        text="Yes",
-        width=120,
-        fg_color=COLORS["button"],
-        hover_color=COLORS["button_hover"],
-        text_color=COLORS["text"],
-        corner_radius=corner_radius(10),
-        command=yes,
-    ).pack(side="right", padx=10)
-
-    confirm_dialog.bind("<Escape>", lambda _e: no())
-    confirm_dialog.wait_window()
-    return result[0]
-
-
-def _hide_control_window():
-    root = _control_app.get("root")
-    if root is not None:
-        try:
-            root.withdraw()
-        except Exception:
-            pass
-
-
-def show_control_window(icon=None, item=None):
-    """Show (or re-show) the main control window from the tray / menu bar."""
-    if icon is not None:
-        _control_app["icon"] = icon
-
-    root = _control_app.get("root")
-    if root is None:
-        create_control_window(icon=_control_app.get("icon"))
-        root = _control_app["root"]
-
-    try:
-        root.deiconify()
-        root.lift()
-        root.focus_force()
-        refresh_control_buttons()
-    except Exception:
-        logger.debug("Could not raise control window", exc_info=True)
-
-
-def refresh_control_buttons():
-    content_frame = _control_app.get("content_frame")
-    root = _control_app.get("root")
-    if content_frame is None or root is None:
-        return
-
-    try:
-        for widget in content_frame.winfo_children():
-            widget.destroy()
-
-        tunnel_active = is_tunnel_active(retries=1, delay=0)
-
-        def action_and_refresh(action_func):
-            action_func(icon=None, item=None)
-            root.after(1500, refresh_control_buttons)
-
-        if _control_app.get("toolkit") == "tk":
-            if not tunnel_active:
-                _make_tk_button(
-                    content_frame, "Connect", COLORS["button"],
-                    lambda: action_and_refresh(on_connect),
-                ).pack(pady=10)
-            if tunnel_active:
-                _make_tk_button(
-                    content_frame, "Disconnect", COLORS["button"],
-                    lambda: action_and_refresh(on_disconnect),
-                ).pack(pady=10)
-            if (
-                os.path.exists(TOKEN_FILE)
-                or os.path.exists(UUID_FILE)
-                or os.path.exists(CONFIG_PATH)
-            ):
-                _make_tk_button(
-                    content_frame,
-                    "Delete Existing Configuration",
-                    COLORS["button"],
-                    lambda: action_and_refresh(on_delete_config),
-                ).pack(pady=10)
-            _make_tk_button(
-                content_frame, "Quit", COLORS["danger"], quit_application
-            ).pack(pady=10)
-            return
-
-        # CustomTkinter path (Windows)
-        radius = corner_radius(20)
-        button_style = {
-            "width": 280,
-            "height": 50,
-            "corner_radius": radius,
-            "text_color": COLORS["text"],
-            "font": ui_font(14, "bold"),
-        }
-        if not tunnel_active:
-            ctk.CTkButton(
-                content_frame,
-                text="Connect",
-                fg_color=COLORS["button"],
-                hover_color=COLORS["button_hover"],
-                command=lambda: action_and_refresh(on_connect),
-                **button_style,
-            ).pack(pady=10)
-        if tunnel_active:
-            ctk.CTkButton(
-                content_frame,
-                text="Disconnect",
-                fg_color=COLORS["button"],
-                hover_color=COLORS["button_hover"],
-                command=lambda: action_and_refresh(on_disconnect),
-                **button_style,
-            ).pack(pady=10)
         if (
             os.path.exists(TOKEN_FILE)
             or os.path.exists(UUID_FILE)
             or os.path.exists(CONFIG_PATH)
         ):
-            ctk.CTkButton(
-                content_frame,
-                text="Delete Existing Configuration",
-                fg_color=COLORS["button"],
-                hover_color=COLORS["button_hover"],
-                command=lambda: action_and_refresh(on_delete_config),
-                **button_style,
-            ).pack(pady=10)
-        ctk.CTkButton(
-            content_frame,
-            text="Quit",
-            fg_color=COLORS["danger"],
-            hover_color=COLORS["danger_hover"],
-            command=quit_application,
-            **button_style,
-        ).pack(pady=10)
-    except Exception:
-        logger.error("Failed to refresh control buttons", exc_info=True)
+            self._add_action_button(
+                "Delete Existing Configuration", self._on_delete_config
+            )
+
+        quit_btn = self._add_action_button("Quit", self._on_quit)
+        quit_btn.setObjectName("dangerButton")
+        # Re-apply stylesheet object name styles
+        quit_btn.style().unpolish(quit_btn)
+        quit_btn.style().polish(quit_btn)
+
+        self.body_layout.addStretch(1)
+
+    def _add_action_button(self, text: str, slot) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(slot)
+        self.body_layout.addWidget(btn)
+        return btn
+
+    def _set_busy(self, busy: bool):
+        self._busy = busy
+        for i in range(self.body_layout.count()):
+            widget = self.body_layout.itemAt(i).widget()
+            if isinstance(widget, QPushButton):
+                widget.setEnabled(not busy)
+
+    def _after_action_refresh(self):
+        self._set_busy(False)
+        self.refresh_buttons()
+
+    def _on_connect(self):
+        if self._busy:
+            return
+        self._set_busy(True)
+        QApplication.processEvents()
+        try:
+            ok, msg = on_connect()
+            if not ok and msg:
+                logger.info("Connect result: %s", msg)
+        finally:
+            QTimer.singleShot(1200, self._after_action_refresh)
+
+    def _on_disconnect(self):
+        if self._busy:
+            return
+        self._set_busy(True)
+        QApplication.processEvents()
+        try:
+            on_disconnect()
+        finally:
+            QTimer.singleShot(1200, self._after_action_refresh)
+
+    def _on_delete_config(self):
+        if self._busy:
+            return
+        self._set_busy(True)
+        QApplication.processEvents()
+        try:
+            on_delete_config(parent=self)
+        finally:
+            QTimer.singleShot(800, self._after_action_refresh)
+
+    def _on_quit(self):
+        quit_application()
 
 
-def quit_application(icon=None, item=None):
-    """Fully exit the application (tray + window) on both platforms."""
-    callback = _control_app.get("quit_callback")
-    if callback:
-        callback()
-        return
+def create_tray(window: ControlWindow) -> QSystemTrayIcon:
+    tray = QSystemTrayIcon(_app_icon(), window)
+    tray.setToolTip("AmpliFi Teleport for Desktop")
 
-    tray = icon or _control_app.get("icon")
-    try:
-        if tray is not None:
-            tray.stop()
-    finally:
-        root = _control_app.get("root")
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
-        os._exit(0)
+    menu = QMenu()
+    open_action = QAction("Open Controls", menu)
+    open_action.triggered.connect(window.show_and_raise)
+    quit_action = QAction("Quit", menu)
+    quit_action.triggered.connect(quit_application)
+    menu.addAction(open_action)
+    menu.addSeparator()
+    menu.addAction(quit_action)
+    tray.setContextMenu(menu)
 
+    def on_activated(reason):
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            window.show_and_raise()
 
-def set_tray_icon(icon):
-    """Attach the pystray icon handle after the control window already exists."""
-    _control_app["icon"] = icon
-
-
-def create_control_window(icon=None, quit_callback=None):
-    """
-    Create the singleton control window (does not start mainloop).
-    Closing the window hides it to the tray / menu bar instead of quitting.
-    """
-    if _control_app["root"] is not None:
-        if icon is not None:
-            _control_app["icon"] = icon
-        if quit_callback is not None:
-            _control_app["quit_callback"] = quit_callback
-        return _control_app["root"]
-
-    if USE_CTK:
-        return _create_ctk_window(icon, quit_callback)
-    return _create_tk_window(icon, quit_callback)
+    tray.activated.connect(on_activated)
+    tray.show()
+    _app_state["tray"] = tray
+    return tray
 
 
-def _create_tk_window(icon=None, quit_callback=None):
-    """Native Tk UI for macOS — reliable rendering + same colors/layout."""
-    root = tk.Tk()
-    root.title("AmpliFi Teleport for Desktop")
-    root.geometry("350x320")
-    root.resizable(False, False)
-    root.configure(bg=COLORS["bg"])
-    _center_window(root, 350, 320)
+def start_ui() -> tuple[QApplication, ControlWindow, QSystemTrayIcon]:
+    """Create the shared Qt application, main window, and system tray."""
+    app = ensure_app()
+    window = ControlWindow()
+    tray = create_tray(window)
+    window.show_and_raise()
+    _app_state["window"] = window
 
-    header = tk.Frame(root, bg=COLORS["header"], height=48)
-    header.pack(fill="x")
-    header.pack_propagate(False)
-    tk.Label(
-        header,
-        text="AmpliFi Teleport for Desktop",
-        font=_tk_font(18, "bold"),
-        fg=COLORS["text"],
-        bg=COLORS["header"],
-    ).pack(expand=True)
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        logger.warning("System tray is not available on this desktop session")
+        show_toast(
+            "Tray Unavailable",
+            "System tray is unavailable; the control window will stay open.",
+        )
 
-    content_frame = tk.Frame(root, bg=COLORS["bg"])
-    content_frame.pack(fill="both", expand=True, padx=20, pady=10)
-
-    tk.Label(
-        root,
-        text="Version 1.0.0",
-        font=_tk_font(10),
-        fg=COLORS["muted_text"],
-        bg=COLORS["bg"],
-    ).pack(side="bottom", pady=(0, 10))
-
-    _control_app["root"] = root
-    _control_app["content_frame"] = content_frame
-    _control_app["icon"] = icon
-    _control_app["quit_callback"] = quit_callback
-    _control_app["toolkit"] = "tk"
-
-    root.protocol("WM_DELETE_WINDOW", _hide_control_window)
-    refresh_control_buttons()
-    logger.info("Created native Tk control window (macOS)")
-    return root
+    return app, window, tray
 
 
-def _create_ctk_window(icon=None, quit_callback=None):
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("blue")
-
-    root = ctk.CTk()
-    root.title("AmpliFi Teleport for Desktop")
-    root.geometry("350x320")
-    root.resizable(False, False)
-    root.configure(fg_color=COLORS["bg"])
-    _set_window_icon(root)
-    _center_window(root, 350, 320)
-
-    header_frame = ctk.CTkFrame(root, fg_color=COLORS["header"], corner_radius=0)
-    header_frame.pack(fill="x", pady=(0, 10))
-    ctk.CTkLabel(
-        header_frame,
-        text="AmpliFi Teleport for Desktop",
-        font=ui_font(18, "bold"),
-        text_color=COLORS["text"],
-    ).pack(pady=12)
-
-    content_frame = ctk.CTkFrame(root, fg_color="transparent")
-    content_frame.pack(fill="both", expand=True, padx=20, pady=10)
-
-    ctk.CTkLabel(
-        root,
-        text="Version 1.0.0",
-        font=ui_font(10),
-        text_color=COLORS["muted_text"],
-    ).pack(side="bottom", pady=(0, 10))
-
-    _control_app["root"] = root
-    _control_app["content_frame"] = content_frame
-    _control_app["icon"] = icon
-    _control_app["quit_callback"] = quit_callback
-    _control_app["toolkit"] = "ctk"
-
-    root.protocol("WM_DELETE_WINDOW", _hide_control_window)
-    refresh_control_buttons()
-    return root
+def show_control_window():
+    window = _app_state.get("window")
+    if window is None:
+        start_ui()
+        window = _app_state["window"]
+    window.show_and_raise()
 
 
-def open_options_window(icon=None, item=None):
-    show_control_window(icon=icon, item=item)
-    root = _control_app.get("root")
-    if root is not None and _control_app.get("quit_callback") is None:
-        root.mainloop()
+def quit_application():
+    tray = _app_state.get("tray")
+    if tray is not None:
+        tray.hide()
+    app = _app_state.get("app") or QApplication.instance()
+    if app is not None:
+        app.quit()
+    # Ensure process exits even if background work remains
+    QTimer.singleShot(200, lambda: os._exit(0))
 
 
-def show_pin_dialog(and_activate=True):
-    parent = _control_app.get("root")
-    pin = custom_pin_dialog(parent=parent)
-    if not pin or pin.strip() == "":
+def ask_pin(parent=None) -> str | None:
+    dialog = PinDialog(parent)
+    dialog.exec()
+    return dialog.pin_value()
+
+
+def confirm_delete(parent=None) -> bool:
+    box = QMessageBox(parent)
+    box.setWindowTitle("Confirm Deletion")
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText("Delete previous Teleport configuration?")
+    box.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    box.setDefaultButton(QMessageBox.StandardButton.No)
+    return box.exec() == QMessageBox.StandardButton.Yes
+
+
+def show_pin_dialog(and_activate=True, parent=None):
+    pin = ask_pin(parent)
+    if not pin:
         return False, "No PIN entered."
 
     success, msg = generate_config(pin)
@@ -684,7 +453,7 @@ def show_pin_dialog(and_activate=True):
     return True, "Config generated successfully"
 
 
-def on_refresh_config(icon, item):
+def on_refresh_config():
     if not os.path.exists(TOKEN_FILE):
         show_toast("Error", "No previous configuration. Enter a PIN first.")
         return False, "No previous configuration"
@@ -704,18 +473,19 @@ def on_refresh_config(icon, item):
     return success, msg
 
 
-def on_connect(icon, item):
+def on_connect():
+    parent = _app_state.get("window")
     if not os.path.exists(TOKEN_FILE):
         try:
-            return show_pin_dialog(and_activate=True)
+            return show_pin_dialog(and_activate=True, parent=parent)
         except Exception:
             logger.error("Error While Creating a New Connection", exc_info=True)
             show_toast("Error", "Error Creating New Connection")
             return False, "Error Creating New Connection"
-    return on_refresh_config(icon=None, item=None)
+    return on_refresh_config()
 
 
-def on_disconnect(icon, item):
+def on_disconnect():
     if not is_tunnel_active():
         show_toast("Error", "No Teleport Tunnel is active")
         return False, "No Teleport Tunnel is active"
@@ -728,11 +498,9 @@ def on_disconnect(icon, item):
     return success, msg
 
 
-def on_delete_config(icon, item):
-    parent = _control_app.get("root")
-    if custom_confirm_dialog(
-        "Confirm Deletion", "Delete previous Teleport configuration?", parent=parent
-    ):
+def on_delete_config(parent=None):
+    parent = parent or _app_state.get("window")
+    if confirm_delete(parent=parent):
         try:
             logger.debug("Disregard following deactivation error if any")
             deactivate_tunnel()
