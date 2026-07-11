@@ -529,7 +529,7 @@ def start_ui():
                 pass
             show_toast(
                 "Menu Bar",
-                "Started with fallback tray icon. Look near the clock for AT.",
+                "Started with fallback tray icon. Look near the clock for the app icon.",
             )
     else:
         tray = create_qt_tray(window)
