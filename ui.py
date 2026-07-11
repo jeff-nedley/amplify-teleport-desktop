@@ -245,67 +245,79 @@ def refresh_control_buttons():
     if content_frame is None or root is None:
         return
 
-    for widget in content_frame.winfo_children():
-        widget.destroy()
+    try:
+        for widget in content_frame.winfo_children():
+            widget.destroy()
 
-    tunnel_active = is_tunnel_active(retries=1, delay=0)
-    radius = corner_radius(20)
+        tunnel_active = is_tunnel_active(retries=1, delay=0)
+        radius = corner_radius(20)
 
-    button_style = {
-        "width": 280,
-        "height": 50,
-        "corner_radius": radius,
-        "text_color": COLORS["text"],
-        "font": ui_font(14, "bold"),
-    }
+        button_style = {
+            "width": 280,
+            "height": 50,
+            "corner_radius": radius,
+            "text_color": COLORS["text"],
+            "font": ui_font(14, "bold"),
+        }
 
-    def action_and_refresh(action_func):
-        action_func(icon=None, item=None)
-        # Defer refresh so WireGuard service / wg-quick state can settle (same on both OSes)
-        root.after(1500, refresh_control_buttons)
+        def action_and_refresh(action_func):
+            action_func(icon=None, item=None)
+            # Defer refresh so WireGuard service / wg-quick state can settle
+            root.after(1500, refresh_control_buttons)
 
-    if not tunnel_active:
+        if not tunnel_active:
+            ctk.CTkButton(
+                content_frame,
+                text="Connect",
+                fg_color=COLORS["button"],
+                hover_color=COLORS["button_hover"],
+                command=lambda: action_and_refresh(on_connect),
+                **button_style,
+            ).pack(pady=10)
+
+        if tunnel_active:
+            ctk.CTkButton(
+                content_frame,
+                text="Disconnect",
+                fg_color=COLORS["button"],
+                hover_color=COLORS["button_hover"],
+                command=lambda: action_and_refresh(on_disconnect),
+                **button_style,
+            ).pack(pady=10)
+
+        if (
+            os.path.exists(TOKEN_FILE)
+            or os.path.exists(UUID_FILE)
+            or os.path.exists(CONFIG_PATH)
+        ):
+            ctk.CTkButton(
+                content_frame,
+                text="Delete Existing Configuration",
+                fg_color=COLORS["button"],
+                hover_color=COLORS["button_hover"],
+                command=lambda: action_and_refresh(on_delete_config),
+                **button_style,
+            ).pack(pady=10)
+
         ctk.CTkButton(
             content_frame,
-            text="Connect",
-            fg_color=COLORS["button"],
-            hover_color=COLORS["button_hover"],
-            command=lambda: action_and_refresh(on_connect),
+            text="Quit",
+            fg_color=COLORS["danger"],
+            hover_color=COLORS["danger_hover"],
+            command=quit_application,
             **button_style,
         ).pack(pady=10)
-
-    if tunnel_active:
-        ctk.CTkButton(
-            content_frame,
-            text="Disconnect",
-            fg_color=COLORS["button"],
-            hover_color=COLORS["button_hover"],
-            command=lambda: action_and_refresh(on_disconnect),
-            **button_style,
-        ).pack(pady=10)
-
-    if (
-        os.path.exists(TOKEN_FILE)
-        or os.path.exists(UUID_FILE)
-        or os.path.exists(CONFIG_PATH)
-    ):
-        ctk.CTkButton(
-            content_frame,
-            text="Delete Existing Configuration",
-            fg_color=COLORS["button"],
-            hover_color=COLORS["button_hover"],
-            command=lambda: action_and_refresh(on_delete_config),
-            **button_style,
-        ).pack(pady=10)
-
-    ctk.CTkButton(
-        content_frame,
-        text="Quit",
-        fg_color=COLORS["danger"],
-        hover_color=COLORS["danger_hover"],
-        command=quit_application,
-        **button_style,
-    ).pack(pady=10)
+    except Exception:
+        logger.error("Failed to refresh control buttons", exc_info=True)
+        try:
+            ctk.CTkLabel(
+                content_frame,
+                text="Unable to load controls. Check the log for details.",
+                text_color=COLORS["text"],
+                font=ui_font(13),
+            ).pack(pady=20)
+        except Exception:
+            pass
 
 
 def quit_application(icon=None, item=None):

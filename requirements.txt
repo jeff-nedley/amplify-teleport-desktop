@@ -14,3 +14,6 @@ pyinstaller>=6.0.0                  # for bundling to .exe / .app
 
 # Windows-only
 pywin32>=306; sys_platform == "win32"
+
+# macOS-only — menu bar status item (AppKit); required for tray-like behavior with Tk
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"

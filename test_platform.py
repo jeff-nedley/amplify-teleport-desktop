@@ -33,14 +33,17 @@ class PlatformUtilsTests(unittest.TestCase):
     def test_ui_font_families(self):
         import platform_utils as pu
 
+        # Reset cache between platform simulations
+        pu._CACHED_FONT_FAMILY = None
         with mock.patch.object(pu, "IS_MACOS", True), mock.patch.object(
             pu, "IS_WINDOWS", False
-        ):
-            self.assertEqual(pu.ui_font(14, "bold")[0], "SF Pro Text")
+        ), mock.patch.object(pu, "_tk_font_family", return_value="Helvetica Neue"):
+            self.assertEqual(pu.ui_font(14, "bold")[0], "Helvetica Neue")
 
+        pu._CACHED_FONT_FAMILY = None
         with mock.patch.object(pu, "IS_MACOS", False), mock.patch.object(
             pu, "IS_WINDOWS", True
-        ):
+        ), mock.patch.object(pu, "_tk_font_family", return_value="Segoe UI"):
             self.assertEqual(pu.ui_font(14, "bold")[0], "Segoe UI")
 
     def test_device_platform_constant(self):

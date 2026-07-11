@@ -98,7 +98,10 @@ pyinstaller --noconfirm --clean --windowed \
   --hidden-import notifications \
   --hidden-import platform_utils \
   --hidden-import teleport \
+  --hidden-import macos_tray \
   --hidden-import plyer.platforms.darwin.notification \
+  --hidden-import AppKit \
+  --hidden-import Foundation \
   main.py
 
 # Clean generated spec from repo root (kept out of git via *.spec)

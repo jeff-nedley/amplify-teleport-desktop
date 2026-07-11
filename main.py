@@ -50,6 +50,15 @@ def main():
         if exiting["done"]:
             return
         exiting["done"] = True
+
+        if IS_MACOS:
+            try:
+                from macos_tray import stop_macos_menu_bar
+
+                stop_macos_menu_bar()
+            except Exception:
+                pass
+
         tray = icon_holder.get("icon")
         try:
             if tray is not None:
@@ -65,7 +74,7 @@ def main():
                 pass
         threading.Timer(0.4, lambda: os._exit(0)).start()
 
-    # Create Tk first on every platform
+    # Create Tk first on every platform (owns NSApplication on macOS)
     root = create_control_window(icon=None, quit_callback=stop_app)
     root.update_idletasks()
     show_control_window(icon=None)
@@ -79,7 +88,7 @@ def main():
         )
 
     if IS_MACOS:
-        _setup_macos_dock(root, stop_app)
+        _setup_macos_tray(root, stop_app)
     else:
         _setup_windows_tray(root, icon_holder, stop_app)
 
@@ -88,6 +97,13 @@ def main():
     try:
         root.mainloop()
     finally:
+        if IS_MACOS:
+            try:
+                from macos_tray import stop_macos_menu_bar
+
+                stop_macos_menu_bar()
+            except Exception:
+                pass
         tray = icon_holder.get("icon")
         if tray is not None:
             try:
@@ -96,16 +112,14 @@ def main():
                 pass
 
 
-def _setup_macos_dock(root, stop_app):
+def _setup_macos_tray(root, stop_app):
     """
-    macOS: do not use pystray.
-
-    pystray + Tk/CustomTkinter on macOS commonly crashes with SIGTRAP
-    ('zsh: trace trap') because both want to own NSApplication / the main thread.
-
-    Closing the window hides it; clicking the Dock icon brings it back.
-    Use Quit in the control window (or Cmd+Q) to fully exit.
+    macOS menu bar status item via AppKit (same NSApplication as Tk).
+    Avoids pystray, which crashes with CustomTkinter (SIGTRAP).
     """
+
+    def on_open():
+        show_control_window(icon=None)
 
     def reopen(*_args):
         show_control_window(icon=None)
@@ -119,6 +133,25 @@ def _setup_macos_dock(root, stop_app):
         root.createcommand("tk::mac::Quit", stop_app)
     except Exception:
         logger.debug("Could not register macOS Quit handler", exc_info=True)
+
+    try:
+        from macos_tray import start_macos_menu_bar
+
+        start_macos_menu_bar(
+            root,
+            ICON_PATH_PNG,
+            on_open=on_open,
+            on_quit=stop_app,
+        )
+    except Exception:
+        logger.error(
+            "Could not start macOS menu bar icon; Dock reopen still works",
+            exc_info=True,
+        )
+        show_toast(
+            "Menu Bar Unavailable",
+            "Install pyobjc-framework-Cocoa for the menu bar icon, or use the Dock icon.",
+        )
 
 
 def _setup_windows_tray(root, icon_holder, stop_app):

@@ -72,19 +72,46 @@ def get_icon_path(prefer_png: bool = False) -> str:
 
 def ui_font(size: int, weight: str = "normal") -> tuple:
     """
-    Native-feeling UI font while keeping the same visual hierarchy on both OSes.
-    Windows: Segoe UI | macOS: SF Pro / Helvetica Neue fallback
+    Native-feeling UI font using families Tk can actually render.
+    (SF Pro is not always available to Tk and can produce a blank UI on macOS.)
     """
-    if IS_MACOS:
-        family = "SF Pro Text"
-    elif IS_WINDOWS:
-        family = "Segoe UI"
-    else:
-        family = "DejaVu Sans"
-
+    family = _tk_font_family()
     if weight in ("bold", "bold italic"):
         return (family, size, "bold")
     return (family, size)
+
+
+_CACHED_FONT_FAMILY: str | None = None
+
+
+def _tk_font_family() -> str:
+    """Pick a font family that exists in the current Tk install."""
+    global _CACHED_FONT_FAMILY
+    if _CACHED_FONT_FAMILY:
+        return _CACHED_FONT_FAMILY
+
+    if IS_MACOS:
+        candidates = ("Helvetica Neue", "Helvetica", "Lucida Grande", "Arial")
+    elif IS_WINDOWS:
+        candidates = ("Segoe UI", "Tahoma", "Arial")
+    else:
+        candidates = ("DejaVu Sans", "Helvetica", "Arial")
+
+    available = set()
+    try:
+        import tkinter.font as tkfont
+
+        available = set(tkfont.families())
+    except Exception:
+        logger.debug("Could not query Tk font families", exc_info=True)
+
+    for name in candidates:
+        if not available or name in available:
+            _CACHED_FONT_FAMILY = name
+            return name
+
+    _CACHED_FONT_FAMILY = candidates[0]
+    return _CACHED_FONT_FAMILY
 
 
 def corner_radius(default: int = 12) -> int:
