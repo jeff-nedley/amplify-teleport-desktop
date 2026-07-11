@@ -246,8 +246,12 @@ def connect_device(deviceToken):
 
     loop = asyncio.get_event_loop()
     try:
-        return loop.run_until_complete(coro)  
-    except KeyboardInterrupt:
-        pass
+        result = loop.run_until_complete(coro)
+        if not result:
+            raise Exception("Teleport handshake failed to produce a WireGuard config.")
+        return result
     finally:
-        loop.run_until_complete(pc.close())
+        try:
+            loop.run_until_complete(pc.close())
+        except Exception:
+            pass

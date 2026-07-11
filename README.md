@@ -59,7 +59,7 @@ The app requests Administrator rights at startup (required for the WireGuard tun
 3. Later: use **Connect**, **Disconnect**, or **Delete Existing Configuration** to reset and enter a new PIN
 4. Click **Quit** (tray menu or control window) to fully exit the application
 
-macOS may prompt for an administrator password when bringing the tunnel up or down.
+macOS may prompt for an administrator password **once** (at Setup install, or the first time you run from source). After that, Connect / Disconnect should not ask again.
 
 ## Data location
 

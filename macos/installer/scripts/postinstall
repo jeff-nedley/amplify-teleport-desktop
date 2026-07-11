@@ -195,6 +195,51 @@ if [[ -f "/Applications/Uninstall AmpliFi Teleport.command" ]]; then
     chmod 755 "/Applications/Uninstall AmpliFi Teleport.command" || true
 fi
 
+# Install passwordless WireGuard helper (one admin prompt at install time — never again in-app)
+PRIV_SRC="/Library/Application Support/AmpliFiTeleport/privileged"
+if [[ -z "${USER_NAME:-}" ]]; then
+    log "WARNING: No console user — skipping WireGuard privilege helper install"
+else
+    HELPER_SRC=""
+    for candidate in \
+        "${PRIV_SRC}/wg-helper.sh" \
+        "/tmp/amplifi_teleport_privileged/wg-helper.sh"
+    do
+        if [[ -f "$candidate" ]]; then
+            HELPER_SRC="$candidate"
+            break
+        fi
+    done
+
+    INSTALL_SRC=""
+    for candidate in \
+        "${PRIV_SRC}/install_privileges.sh" \
+        "/tmp/amplifi_teleport_privileged/install_privileges.sh"
+    do
+        if [[ -f "$candidate" ]]; then
+            INSTALL_SRC="$candidate"
+            break
+        fi
+    done
+
+    # Fallback: helper may be next to this postinstall script in the pkg scripts dir
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    [[ -z "$HELPER_SRC" && -f "${SCRIPT_DIR}/wg-helper.sh" ]] && HELPER_SRC="${SCRIPT_DIR}/wg-helper.sh"
+    [[ -z "$INSTALL_SRC" && -f "${SCRIPT_DIR}/install_privileges.sh" ]] && INSTALL_SRC="${SCRIPT_DIR}/install_privileges.sh"
+
+    if [[ -n "$HELPER_SRC" && -n "$INSTALL_SRC" ]]; then
+        log "Installing passwordless WireGuard helper for ${USER_NAME}"
+        if /bin/bash "$INSTALL_SRC" "$USER_NAME" "$HELPER_SRC"; then
+            log "WireGuard privilege helper installed"
+        else
+            log "ERROR: Failed to install WireGuard privilege helper"
+            show_error "Could not install the WireGuard privilege helper. The app may ask for your password when connecting."
+        fi
+    else
+        log "WARNING: Privilege helper scripts not found in package payload"
+    fi
+fi
+
 WIREGUARD_WAS_MISSING=0
 if is_wireguard_installed; then
     log "WireGuard CLI tools already installed — skipping dependency install"

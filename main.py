@@ -7,7 +7,13 @@ import sys
 
 from logging.handlers import RotatingFileHandler
 
-from platform_utils import ensure_wireguard_available, get_log_path, run_elevated_startup
+from platform_utils import (
+    IS_MACOS,
+    ensure_wireguard_available,
+    get_log_path,
+    macos_helper_ready,
+    run_elevated_startup,
+)
 from notifications import show_toast
 from ui import start_ui
 
@@ -32,7 +38,7 @@ logger.addHandler(file_handler)
 
 def main():
     # Windows: elevate at startup for tunnel service control (UAC).
-    # macOS: app stays user-level; tunnel commands prompt via native admin dialog.
+    # macOS: one-time privilege helper install (skipped if DMG already set it up).
     run_elevated_startup()
 
     app, window, _tray = start_ui()
@@ -41,6 +47,13 @@ def main():
     if not ok:
         logger.error(msg)
         show_toast("WireGuard Required", msg.replace("\n", " "))
+
+    if IS_MACOS and not macos_helper_ready():
+        show_toast(
+            "Admin Setup Needed",
+            "Approve the administrator prompt on next launch so Connect/Disconnect "
+            "do not ask for your password again.",
+        )
 
     logger.info("Application started on %s", sys.platform)
     sys.exit(app.exec())

@@ -86,6 +86,8 @@ pyinstaller --noconfirm --clean --windowed \
   --icon "${APP_ICON}" \
   --add-data "tray-icon.ico:." \
   --add-data "tray-icon.png:." \
+  --add-data "macos/privileged/wg-helper.sh:macos/privileged" \
+  --add-data "macos/privileged/install_privileges.sh:macos/privileged" \
   --hidden-import config \
   --hidden-import tunnel \
   --hidden-import ui \

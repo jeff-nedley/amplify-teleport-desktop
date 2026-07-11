@@ -194,32 +194,181 @@ def is_admin() -> bool:
         return False
 
 
+# macOS passwordless WireGuard helper (installed by DMG postinstall or one-time bootstrap)
+MACOS_WG_HELPER = "/Library/PrivilegedHelperTools/amplifi-teleport-wg-helper"
+MACOS_SUDOERS = "/etc/sudoers.d/amplifi-teleport"
+
+
+def _macos_helper_source() -> str | None:
+    candidates = [
+        resource_path("macos", "privileged", "wg-helper.sh"),
+        resource_path("wg-helper.sh"),
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "macos",
+            "privileged",
+            "wg-helper.sh",
+        ),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _macos_install_script() -> str | None:
+    candidates = [
+        resource_path("macos", "privileged", "install_privileges.sh"),
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "macos",
+            "privileged",
+            "install_privileges.sh",
+        ),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def macos_helper_ready() -> bool:
+    """True when passwordless sudo to the WireGuard helper works."""
+    if not IS_MACOS:
+        return False
+    if not os.path.isfile(MACOS_WG_HELPER):
+        return False
+    try:
+        # Use the real per-user config path so the helper's path guard accepts it
+        config_path = os.path.expanduser(
+            "~/Library/Application Support/AmpliFiTeleport/teleport.conf"
+        )
+        result = subprocess.run(
+            ["sudo", "-n", MACOS_WG_HELPER, "status", config_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        combined = f"{result.stdout or ''}{result.stderr or ''}".lower()
+        if "password" in combined or "a password is required" in combined:
+            return False
+        # 0 = active, 1 = inactive — both mean sudo -n worked
+        if result.returncode in (0, 1):
+            return True
+        if "sudo:" in combined and (
+            "not allowed" in combined or "password is required" in combined
+        ):
+            return False
+        # Other helper errors still prove sudo worked
+        return "sudo:" not in combined
+    except Exception:
+        logger.debug("macos_helper_ready check failed", exc_info=True)
+        return False
+
+
+def install_macos_privileges() -> tuple[bool, str]:
+    """
+    One-time admin prompt that installs the helper + sudoers rule.
+    After this succeeds, Connect/Disconnect never ask for a password again.
+    """
+    if not IS_MACOS:
+        return True, "not macOS"
+
+    if macos_helper_ready():
+        return True, "already installed"
+
+    helper_src = _macos_helper_source()
+    install_script = _macos_install_script()
+    if not helper_src or not install_script:
+        return False, (
+            "Privilege helper scripts are missing from the app bundle. "
+            "Reinstall from the Setup DMG, or run from a full source checkout."
+        )
+
+    import getpass
+
+    user = getpass.getuser()
+    cmd = (
+        f"/bin/bash {shlex.quote(install_script)} "
+        f"{shlex.quote(user)} {shlex.quote(helper_src)}"
+    )
+    apple_script = (
+        f'do shell script {json.dumps(cmd)} with administrator privileges'
+    )
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", apple_script],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except Exception as e:
+        return False, f"Privilege install failed: {e}"
+
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return False, err or "Privilege install was cancelled or failed."
+
+    if macos_helper_ready():
+        return True, "installed"
+    return False, (
+        "Admin approval succeeded, but passwordless WireGuard helper is still unavailable. "
+        "Try quitting and relaunching the app."
+    )
+
+
 def run_elevated_startup() -> None:
     """
     Ensure privileges needed for tunnel management.
     Windows: re-launch the whole app elevated (UAC) — required for tunnel services.
-    macOS: no-op at startup; tunnel ops elevate per-command (native pattern).
+    macOS: one-time helper/sudoers install (DMG already did this; source prompts once).
     """
-    if not IS_WINDOWS:
-        return
+    if IS_WINDOWS:
+        if is_admin():
+            return
+        import ctypes
 
-    if is_admin():
-        return
+        params = subprocess.list2cmdline(sys.argv[1:])
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, params, None, 1
+        )
+        sys.exit(0)
 
-    import ctypes
+    if IS_MACOS:
+        ok, msg = install_macos_privileges()
+        if not ok:
+            logger.error("macOS privilege setup failed: %s", msg)
+            # Don't abort startup — UI can still open and show the error on Connect
+            return
+        logger.info("macOS WireGuard privileges ready (%s)", msg)
 
-    params = subprocess.list2cmdline(sys.argv[1:])
-    ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, params, None, 1
+
+def run_macos_wg_helper(action: str, config_path: str, timeout: float | None = 90) -> subprocess.CompletedProcess:
+    """
+    Run up/down/status through the passwordless helper.
+    Requires ensure_macos_privileges / DMG install to have succeeded.
+    """
+    if not os.path.isfile(MACOS_WG_HELPER):
+        return subprocess.CompletedProcess(
+            args=[MACOS_WG_HELPER, action, config_path],
+            returncode=127,
+            stdout="",
+            stderr="WireGuard helper is not installed",
+        )
+    return subprocess.run(
+        ["sudo", "-n", MACOS_WG_HELPER, action, config_path],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
-    sys.exit(0)
 
 
 def run_privileged(command: list[str], timeout: float | None = 60) -> subprocess.CompletedProcess:
     """
     Run a command with administrator privileges when required.
     Windows: caller is already elevated at startup.
-    macOS: prompt via osascript (native admin dialog) when not root.
+    macOS: prefer passwordless helper; fall back to a one-shot admin prompt.
     """
     kwargs = {
         "capture_output": True,
@@ -229,7 +378,7 @@ def run_privileged(command: list[str], timeout: float | None = 60) -> subprocess
     }
 
     if IS_MACOS and not is_admin():
-        # Native macOS admin password dialog; keeps the GUI app unprivileged.
+        # Legacy fallback — prefer run_macos_wg_helper for tunnel ops
         cmd_str = " ".join(shlex.quote(part) for part in command)
         apple_script = f"do shell script {json.dumps(cmd_str)} with administrator privileges"
         return subprocess.run(

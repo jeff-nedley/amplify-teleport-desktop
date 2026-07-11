@@ -101,8 +101,17 @@ stage_payload() {
     cp "$UNINSTALLER_SRC" "${PAYLOAD_DIR}/Applications/Uninstall AmpliFi Teleport.command"
     chmod 755 "${PAYLOAD_DIR}/Applications/Uninstall AmpliFi Teleport.command"
 
-    # Also stage a copy under Application Support path created at runtime by postinstall if needed
-    mkdir -p "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport"
+    # Privilege helper scripts (installed by postinstall with sudoers)
+    mkdir -p "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged"
+    cp "${ROOT}/macos/privileged/wg-helper.sh" \
+        "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged/wg-helper.sh"
+    cp "${ROOT}/macos/privileged/install_privileges.sh" \
+        "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged/install_privileges.sh"
+    chmod 755 \
+        "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged/wg-helper.sh" \
+        "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged/install_privileges.sh"
+
+    # Also keep a copy of the uninstaller under Application Support
     cp "$UNINSTALLER_SRC" \
         "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/Uninstall AmpliFi Teleport.command"
     chmod 755 \
@@ -111,7 +120,11 @@ stage_payload() {
 
 prepare_scripts() {
     chmod 755 "${SCRIPTS_DIR}/postinstall"
-    # Ensure postinstall is bash-compatible and executable for pkgbuild
+    # Copy helper scripts next to postinstall so the pkg scripts volume has them too
+    cp "${ROOT}/macos/privileged/wg-helper.sh" "${SCRIPTS_DIR}/wg-helper.sh"
+    cp "${ROOT}/macos/privileged/install_privileges.sh" "${SCRIPTS_DIR}/install_privileges.sh"
+    chmod 755 "${SCRIPTS_DIR}/wg-helper.sh" "${SCRIPTS_DIR}/install_privileges.sh"
+
     if [[ ! -x "${SCRIPTS_DIR}/postinstall" ]]; then
         log "ERROR: postinstall is not executable"
         exit 1

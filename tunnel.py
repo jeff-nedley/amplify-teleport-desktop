@@ -25,7 +25,9 @@ from platform_utils import (
     find_wg,
     find_wg_quick,
     find_wireguard_exe,
+    macos_helper_ready,
     run_hidden,
+    run_macos_wg_helper,
     run_privileged,
 )
 from teleport import connect_device, generate_client_hint, get_device_token
@@ -213,9 +215,16 @@ def _wg_quick_command(action: str) -> list[str]:
 
 
 def _activate_macos():
-    # Only tear down first when something looks active — avoids an extra password prompt
+    if not macos_helper_ready():
+        return False, (
+            "Administrator privileges are not set up for WireGuard. "
+            "Quit and relaunch the app to approve the one-time privilege prompt, "
+            "or reinstall from the Setup DMG."
+        )
+
+    # Only tear down first when something looks active
     if _is_active_macos():
-        down = run_privileged(_wg_quick_command("down"), timeout=60)
+        down = run_macos_wg_helper("down", CONFIG_PATH, timeout=60)
         if down.returncode != 0:
             combined = f"{down.stdout or ''}{down.stderr or ''}".lower()
             if not any(
@@ -230,7 +239,7 @@ def _activate_macos():
             ):
                 logger.debug("wg-quick down before activate: %s", combined.strip())
 
-    up = run_privileged(_wg_quick_command("up"), timeout=90)
+    up = run_macos_wg_helper("up", CONFIG_PATH, timeout=90)
     if up.returncode != 0:
         err = (up.stderr or up.stdout or "").strip()
         _set_active_marker(False)
@@ -241,7 +250,13 @@ def _activate_macos():
 
 
 def _deactivate_macos():
-    result = run_privileged(_wg_quick_command("down"), timeout=60)
+    if not macos_helper_ready():
+        return False, (
+            "Administrator privileges are not set up for WireGuard. "
+            "Quit and relaunch the app to approve the one-time privilege prompt."
+        )
+
+    result = run_macos_wg_helper("down", CONFIG_PATH, timeout=60)
     if result.returncode != 0:
         err = f"{result.stderr or ''}{result.stdout or ''}".strip().lower()
         if any(

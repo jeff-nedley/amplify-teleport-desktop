@@ -113,9 +113,18 @@ if is_wireguard_installed; then
     fi
 fi
 
-# Remove system support marker / logs (best effort; may need admin)
+# Remove system support marker / logs / privilege helper (best effort; may need admin)
 rm -rf "$SUPPORT_SYSTEM" 2>/dev/null || true
 rm -rf "$LOG_DIR" 2>/dev/null || true
+rm -f /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper 2>/dev/null || true
+rm -f /etc/sudoers.d/amplifi-teleport 2>/dev/null || true
+
+# If helper/sudoers remain (permission denied), ask for admin once to finish cleanup
+if [[ -e /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper || -e /etc/sudoers.d/amplifi-teleport ]]; then
+    osascript <<'EOF' >/dev/null 2>&1 || true
+do shell script "rm -f /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper /etc/sudoers.d/amplifi-teleport; rm -rf '/Library/Application Support/AmpliFiTeleport' /Library/Logs/AmpliFiTeleport" with administrator privileges
+EOF
+fi
 
 # Remove this uninstaller last
 osascript_dialog \
