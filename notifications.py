@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Jeff Nedley
 # Licensed under the MIT License (see LICENSE for details)
 
+from __future__ import annotations
+
 import json
 import logging
 import os
