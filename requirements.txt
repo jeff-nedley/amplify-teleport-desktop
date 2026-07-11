@@ -13,3 +13,6 @@ pyinstaller>=6.0.0
 
 # Windows-only
 pywin32>=306; sys_platform == "win32"
+
+# macOS-only — native menu bar status item (NSStatusItem) + no Dock icon
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"

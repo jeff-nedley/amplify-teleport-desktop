@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from config import CONFIG_PATH, ICON_PATH_ICO, ICON_PATH_PNG, TOKEN_FILE, UUID_FILE
 from notifications import show_toast
-from platform_utils import IS_WINDOWS
+from platform_utils import IS_MACOS, IS_WINDOWS
 from tunnel import (
     activate_tunnel,
     deactivate_tunnel,
@@ -349,7 +349,7 @@ class ControlWindow(QMainWindow):
         quit_application()
 
 
-def create_tray(window: ControlWindow) -> QSystemTrayIcon:
+def create_windows_tray(window: ControlWindow) -> QSystemTrayIcon:
     tray = QSystemTrayIcon(_app_icon(), window)
     tray.setToolTip("AmpliFi Teleport for Desktop")
 
@@ -372,24 +372,76 @@ def create_tray(window: ControlWindow) -> QSystemTrayIcon:
 
     tray.activated.connect(on_activated)
     tray.show()
-    _app_state["tray"] = tray
     return tray
 
 
-def start_ui() -> tuple[QApplication, ControlWindow, QSystemTrayIcon]:
-    """Create the shared Qt application, main window, and system tray."""
+def create_macos_tray(window: ControlWindow):
+    """Native AppKit status item (menu bar) + hide Dock icon."""
+    from macos_tray import MacOSTray
+
+    # Hide Dock as early as possible (before the window is shown).
+    MacOSTray.hide_dock_icon()
+
+    tray = MacOSTray(
+        on_open=window.show_and_raise,
+        on_quit=quit_application,
+        title="AmpliFi Teleport for Desktop",
+        icon_path=ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None,
+    )
+    tray.start()
+    return tray
+
+
+def start_ui():
+    """Create the shared Qt application, main window, and tray / menu bar icon."""
     app = ensure_app()
+
+    if IS_MACOS:
+        # Accessory policy before showing any windows keeps the Dock clear.
+        try:
+            from macos_tray import MacOSTray
+
+            MacOSTray.hide_dock_icon()
+        except Exception:
+            logger.exception("Failed to set macOS accessory activation policy")
+
     window = ControlWindow()
-    tray = create_tray(window)
-    window.show_and_raise()
     _app_state["window"] = window
 
-    if not QSystemTrayIcon.isSystemTrayAvailable():
-        logger.warning("System tray is not available on this desktop session")
-        show_toast(
-            "Tray Unavailable",
-            "System tray is unavailable; the control window will stay open.",
-        )
+    if IS_MACOS:
+        try:
+            tray = create_macos_tray(window)
+        except Exception:
+            logger.exception("Failed to create macOS menu bar status item")
+            tray = None
+            show_toast(
+                "Menu Bar Unavailable",
+                "Could not create the menu bar icon; the control window will stay open.",
+            )
+    else:
+        tray = create_windows_tray(window)
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.warning("System tray is not available on this desktop session")
+            show_toast(
+                "Tray Unavailable",
+                "System tray is unavailable; the control window will stay open.",
+            )
+
+    _app_state["tray"] = tray
+    window.show_and_raise()
+
+    if IS_MACOS:
+        # Qt can flip activation policy when the first window appears; re-assert.
+        def _reassert_accessory():
+            try:
+                from macos_tray import MacOSTray
+
+                MacOSTray.hide_dock_icon()
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _reassert_accessory)
+        QTimer.singleShot(500, _reassert_accessory)
 
     return app, window, tray
 
@@ -405,7 +457,13 @@ def show_control_window():
 def quit_application():
     tray = _app_state.get("tray")
     if tray is not None:
-        tray.hide()
+        try:
+            if hasattr(tray, "stop"):
+                tray.stop()
+            elif hasattr(tray, "hide"):
+                tray.hide()
+        except Exception:
+            logger.exception("Failed to tear down tray / status item")
     app = _app_state.get("app") or QApplication.instance()
     if app is not None:
         app.quit()

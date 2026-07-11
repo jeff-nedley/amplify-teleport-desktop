@@ -91,9 +91,13 @@ pyinstaller --noconfirm --clean --windowed \
   --hidden-import config \
   --hidden-import tunnel \
   --hidden-import ui \
+  --hidden-import macos_tray \
   --hidden-import notifications \
   --hidden-import platform_utils \
   --hidden-import teleport \
+  --hidden-import objc \
+  --hidden-import AppKit \
+  --hidden-import Foundation \
   --hidden-import PySide6.QtCore \
   --hidden-import PySide6.QtGui \
   --hidden-import PySide6.QtWidgets \
@@ -101,6 +105,17 @@ pyinstaller --noconfirm --clean --windowed \
   main.py
 
 rm -f "${ROOT}/${APP_NAME}.spec"
+
+# Menu-bar accessory: no Dock icon for the packaged .app
+INFO_PLIST="${ROOT}/dist/${APP_NAME}.app/Contents/Info.plist"
+if [[ -f "${INFO_PLIST}" ]]; then
+  if /usr/libexec/PlistBuddy -c "Print :LSUIElement" "${INFO_PLIST}" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "${INFO_PLIST}"
+  else
+    /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "${INFO_PLIST}"
+  fi
+  echo "Set LSUIElement=true in Info.plist (no Dock icon)"
+fi
 
 echo ""
 echo "Built: dist/${APP_NAME}.app"
