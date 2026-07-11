@@ -9,7 +9,7 @@
 ;   macos/uninstaller/Uninstall AmpliFi Teleport.command
 
 #define MyAppName "Amplifi Teleport for Desktop"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Jeff Nedley"
 #define MyAppURL "https://github.com/jeff-nedley/amplify-teleport-desktop"
 #define MyAppExeName "AmpliFi Teleport for Desktop.exe"

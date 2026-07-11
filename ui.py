@@ -363,7 +363,7 @@ def create_control_window(icon=None, quit_callback=None):
 
     ctk.CTkLabel(
         root,
-        text="Version 1.1.0",
+        text="Version 1.0.0",
         font=ui_font(10),
         text_color=COLORS["muted_text"],
     ).pack(side="bottom", pady=(0, 10))

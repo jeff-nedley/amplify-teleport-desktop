@@ -34,8 +34,8 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 ## Installation
 
 1. Download the latest release from the [Releases page](https://github.com/jeff-nedley/amplify-teleport-desktop/releases)
-   - **Windows:** Setup `.exe`
-   - **macOS:** Setup `.dmg` (open it, then run the Setup `.pkg`)
+   - **Windows:** `Amplifi.Teleport.For.Desktop.Setup-1.0.0.exe`
+   - **macOS:** `Amplifi Teleport For Desktop Setup-1.0.0.dmg` (open it, then run the `.pkg` inside)
 2. Follow the installer prompts (administrator permission required)
 3. If WireGuard is not already installed, Setup installs it silently
 4. The app launches when installation finishes

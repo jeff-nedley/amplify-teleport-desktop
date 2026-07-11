@@ -29,7 +29,7 @@ cd "$ROOT"
 APP_NAME="AmpliFi Teleport for Desktop"
 APP_BUNDLE="${APP_NAME}.app"
 IDENTIFIER="com.jeffnedley.amplifiteleport"
-VERSION="1.1.0"
+VERSION="1.0.0"
 SKIP_APP_BUILD=0
 
 for arg in "$@"; do
