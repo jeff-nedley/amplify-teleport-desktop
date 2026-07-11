@@ -22,14 +22,28 @@ rm -rf build/pyinstaller_app dist/*.app 2>/dev/null || true
 # Keep dist/*.dmg / dist/*.pkg if present; only replace the app bundle below
 rm -rf "dist/AmpliFi Teleport for Desktop.app"
 
+# Paths must be absolute: with --specpath, PyInstaller resolves --add-data / --icon
+# relative to the spec directory (not the project root).
+ICON_PNG="${ROOT}/tray-icon.png"
+ICON_ICO="${ROOT}/tray-icon.ico"
+
+if [[ ! -f "$ICON_PNG" ]]; then
+  echo "ERROR: Missing ${ICON_PNG}" >&2
+  exit 1
+fi
+if [[ ! -f "$ICON_ICO" ]]; then
+  echo "ERROR: Missing ${ICON_ICO}" >&2
+  exit 1
+fi
+
 # On macOS, --add-data uses colon separators
 pyinstaller --noconfirm --windowed --name "AmpliFi Teleport for Desktop" \
   --distpath dist \
   --workpath build/pyinstaller_app \
   --specpath build/pyinstaller_app \
-  --icon tray-icon.png \
-  --add-data "tray-icon.ico:." \
-  --add-data "tray-icon.png:." \
+  --icon "$ICON_PNG" \
+  --add-data "${ICON_ICO}:." \
+  --add-data "${ICON_PNG}:." \
   --hidden-import config \
   --hidden-import tunnel \
   --hidden-import ui \
@@ -37,7 +51,7 @@ pyinstaller --noconfirm --windowed --name "AmpliFi Teleport for Desktop" \
   --hidden-import platform_utils \
   --hidden-import teleport \
   --hidden-import plyer.platforms.darwin.notification \
-  main.py
+  "${ROOT}/main.py"
 
 echo ""
 echo "Built: dist/AmpliFi Teleport for Desktop.app"
