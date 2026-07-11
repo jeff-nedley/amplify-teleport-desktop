@@ -58,6 +58,8 @@ def generate_config(pin=None):
                 device_token = f.read().strip()
 
         config_str = connect_device(device_token)
+        if not config_str:
+            raise Exception("Teleport handshake failed to produce a WireGuard config.")
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(config_str)
 

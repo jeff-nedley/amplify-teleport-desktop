@@ -12,13 +12,26 @@ import socket
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
 from aiortc.sdp import grouplines, parse_attr
 
-from platform_utils import DEVICE_PLATFORM, find_wg, subprocess_kwargs
+from platform_utils import find_wg, subprocess_kwargs
 
 ICE_STUN_SERVER = "stun:global.stun.twilio.com:3478"
 
 REQUEST_DEVICE_TOKEN_URL = "https://client.amplifi.com/api/deviceToken/mlRequestClientAccess"
 ICE_CONFIG_URL = "https://client.amplifi.com/api/deviceToken/mlIceConfig"
 SIGNALING_URL = "https://client.amplifi.com/api/deviceToken/mlClientConnect"
+
+# AmpliFi's API expects a mobile platform label (controls router UI icon / handshake).
+# Do not send "macOS"/"Windows" — that can cause connect failures (e.g. error 10).
+DEVICE_PLATFORM = "iOS"
+
+# Human-readable hints for known AmpliFi API error codes
+_API_ERROR_HINTS = {
+    10: (
+        "AmpliFi rejected the Teleport handshake (error 10). "
+        "Make sure you are NOT on your AmpliFi home Wi‑Fi (use cellular or another network), "
+        "and that your Teleport PIN is still valid."
+    ),
+}
 
 logger = logging.getLogger("AmpliFi Teleport for Desktop")
 
@@ -93,10 +106,13 @@ def _get_remote_description(localDescription, deviceToken):
     answerAndSuccess = connectResponse.json()
 
     if not answerAndSuccess["success"]:
-        if answerAndSuccess["error"]:
-            raise Exception("Connect request failed (%s)" % answerAndSuccess["error"])
-        else:
-            raise Exception("Connect request failed")
+        err = answerAndSuccess.get("error")
+        hint = _API_ERROR_HINTS.get(err) or _API_ERROR_HINTS.get(str(err))
+        if hint:
+            raise Exception(hint)
+        if err:
+            raise Exception("Connect request failed (%s)" % err)
+        raise Exception("Connect request failed")
 
     answer = answerAndSuccess["answer"]
     return RTCSessionDescription(sdp=answer, type="answer")
@@ -196,6 +212,7 @@ async def _connect_device_peer(pc, deviceToken):
     except Exception as e:
         logger.error(e)
         await pc.close()
+        raise
 
 def generate_client_hint():
     return str(uuid.uuid4()).upper()

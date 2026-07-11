@@ -50,8 +50,11 @@ class PlatformUtilsTests(unittest.TestCase):
 
     def test_device_platform_constant(self):
         import platform_utils as pu
+        import teleport
 
         self.assertIn(pu.DEVICE_PLATFORM, {"Windows", "macOS", "Linux"})
+        # AmpliFi handshake must keep advertising a mobile platform label
+        self.assertEqual(teleport.DEVICE_PLATFORM, "iOS")
 
     def test_wireguard_missing_message_is_os_specific(self):
         import platform_utils as pu
