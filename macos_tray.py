@@ -17,6 +17,11 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Keep strong refs — otherwise the Dock reverts to the Python interpreter icon.
+_DOCK_ICON_IMAGE = None
+_DOCK_ICON_VIEW = None
+_DOCK_ICON_PATH: Optional[str] = None
+
 
 def hide_dock_icon() -> None:
     """Run as a menu-bar accessory — no Dock icon."""
@@ -27,29 +32,76 @@ def hide_dock_icon() -> None:
     logger.info("macOS activation policy set to Accessory (no Dock icon)")
 
 
+def _resolve_icon_path(icon_path: Optional[str] = None) -> Optional[str]:
+    if icon_path and os.path.exists(icon_path):
+        return os.path.abspath(icon_path)
+
+    from platform_utils import resource_path
+
+    for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
+        candidate = resource_path(name)
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    return None
+
+
 def set_dock_icon(icon_path: Optional[str] = None) -> bool:
-    """Set the Dock / app icon to the AmpliFi Teleport artwork."""
-    from AppKit import NSApplication, NSImage
+    """
+    Set the Dock / app icon to the AmpliFi Teleport artwork.
 
-    path = icon_path
-    if not path or not os.path.exists(path):
-        from platform_utils import resource_path
+    Running from source uses the python.org binary, so macOS defaults to the
+    Python Dock icon. setApplicationIconImage alone is often overwritten when
+    the activation policy flips to Regular — we also pin an NSImageView onto
+    the Dock tile and keep strong Python refs to the image/view.
+    """
+    global _DOCK_ICON_IMAGE, _DOCK_ICON_VIEW, _DOCK_ICON_PATH
 
-        for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
-            candidate = resource_path(name)
-            if os.path.exists(candidate):
-                path = candidate
-                break
-    if not path or not os.path.exists(path):
+    from AppKit import (
+        NSApplication,
+        NSImage,
+        NSImageScaleProportionallyUpOrDown,
+        NSImageView,
+        NSMakeRect,
+    )
+    from Foundation import NSData
+
+    path = _resolve_icon_path(icon_path) or _resolve_icon_path(_DOCK_ICON_PATH)
+    if not path:
         logger.warning("No app icon file found for Dock")
         return False
 
     image = NSImage.alloc().initWithContentsOfFile_(path)
     if image is None:
+        data = NSData.dataWithContentsOfFile_(path)
+        if data is not None:
+            image = NSImage.alloc().initWithData_(data)
+    if image is None:
         logger.error("Failed to load Dock icon from %s", path)
         return False
 
-    NSApplication.sharedApplication().setApplicationIconImage_(image)
+    # Prefer a large representation for the Dock tile.
+    try:
+        image.setSize_((256.0, 256.0))
+    except Exception:
+        pass
+
+    _DOCK_ICON_PATH = path
+    _DOCK_ICON_IMAGE = image
+
+    app = NSApplication.sharedApplication()
+    app.setApplicationIconImage_(image)
+
+    try:
+        tile = app.dockTile()
+        view = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, 256, 256))
+        view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        view.setImage_(image)
+        _DOCK_ICON_VIEW = view
+        tile.setContentView_(view)
+        tile.display()
+    except Exception:
+        logger.exception("Failed to update Dock tile content view")
+
     logger.info("Dock / application icon set from %s", path)
     return True
 
@@ -65,9 +117,10 @@ def present_app() -> None:
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
-    # Ensure the Dock tile uses our icon when it becomes visible.
+    # Policy changes reset the Dock tile to the python.org icon — re-apply ours.
     set_dock_icon()
     app.activateIgnoringOtherApps_(True)
+    set_dock_icon()
     logger.info("macOS activation policy set to Regular (presenting window)")
 
 

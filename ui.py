@@ -323,7 +323,23 @@ class ControlWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.setActiveWindow(self)
+            app.setWindowIcon(_app_icon())
+        self.setWindowIcon(_app_icon())
         self.refresh_buttons()
+
+        if IS_MACOS:
+            # Qt often resets the Dock tile to the Python icon after show().
+            try:
+                from macos_tray import set_dock_icon
+
+                icon_path = ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None
+                set_dock_icon(icon_path)
+                QTimer.singleShot(0, lambda p=icon_path: set_dock_icon(p))
+                QTimer.singleShot(100, lambda p=icon_path: set_dock_icon(p))
+                QTimer.singleShot(400, lambda p=icon_path: set_dock_icon(p))
+            except Exception:
+                logger.exception("Failed to re-apply Dock icon after show")
+
         logger.info("Control window shown/raised (visible=%s)", self.isVisible())
 
     def _clear_body(self):
