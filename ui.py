@@ -248,7 +248,7 @@ def refresh_control_buttons():
     for widget in content_frame.winfo_children():
         widget.destroy()
 
-    tunnel_active = is_tunnel_active(retries=4, delay=0.8)
+    tunnel_active = is_tunnel_active(retries=1, delay=0)
     radius = corner_radius(20)
 
     button_style = {

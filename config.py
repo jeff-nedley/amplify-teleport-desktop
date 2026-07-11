@@ -18,6 +18,9 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "teleport.conf")
 # Tunnel interface / service name (derived from config filename)
 TUNNEL_NAME = "teleport"
 
+# Local marker used on macOS so status checks never need an admin password prompt
+TUNNEL_ACTIVE_MARKER = os.path.join(CONFIG_DIR, "tunnel_active")
+
 # Icons: .ico preferred on Windows, .png on macOS (both ship in the repo)
 ICON_PATH = get_icon_path(prefer_png=False)
 ICON_PATH_PNG = get_icon_path(prefer_png=True)

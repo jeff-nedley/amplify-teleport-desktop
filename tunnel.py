@@ -10,7 +10,13 @@ import os
 import re
 import time
 
-from config import CONFIG_PATH, TOKEN_FILE, TUNNEL_NAME, UUID_FILE
+from config import (
+    CONFIG_PATH,
+    TOKEN_FILE,
+    TUNNEL_ACTIVE_MARKER,
+    TUNNEL_NAME,
+    UUID_FILE,
+)
 from platform_utils import (
     IS_MACOS,
     IS_WINDOWS,
@@ -73,9 +79,7 @@ def activate_tunnel():
     try:
         if IS_WINDOWS:
             return _activate_windows()
-        if IS_MACOS:
-            return _activate_macos()
-        return _activate_macos()  # Linux uses wg-quick similarly
+        return _activate_macos()
     except Exception as e:
         logger.error("Error While Activating Tunnel Connection", exc_info=True)
         return False, f"Activation failed: {e}"
@@ -96,40 +100,56 @@ def deactivate_tunnel():
         return False, f"Deactivation failed: {e}"
 
 
-def is_tunnel_active(retries=3, delay=1.0):
-    """Return True when the teleport tunnel is up (same semantics on both OSes)."""
-    for _ in range(retries):
+def is_tunnel_active(retries=1, delay=0.0):
+    """
+    Return True when the teleport tunnel is up.
+    Status checks must never prompt for a password (especially on macOS).
+    """
+    last = False
+    for attempt in range(max(1, retries)):
         try:
             if IS_WINDOWS:
-                active = _is_active_windows()
+                last = _is_active_windows()
             else:
-                active = _is_active_macos()
+                last = _is_active_macos()
 
-            if active:
-                logger.info("Teleport Tunnel is active")
+            if last:
+                logger.debug("Teleport tunnel is active")
                 return True
 
-            logger.info("Teleport Tunnel is stopped")
-            # Only retry when we got a definitive "not active" — still poll a few times
-            # so callers waiting for service state transitions behave the same.
-            time.sleep(delay)
+            if attempt + 1 < retries and delay > 0:
+                time.sleep(delay)
         except Exception:
             logger.warning("Error while checking for active tunnel", exc_info=True)
             return False
 
+    logger.debug("Teleport tunnel is stopped")
     return False
+
+
+def _set_active_marker(active: bool) -> None:
+    """Persist UI-facing tunnel state without requiring privileged queries."""
+    try:
+        if active:
+            with open(TUNNEL_ACTIVE_MARKER, "w", encoding="utf-8") as f:
+                f.write("1\n")
+        elif os.path.exists(TUNNEL_ACTIVE_MARKER):
+            os.remove(TUNNEL_ACTIVE_MARKER)
+    except OSError:
+        logger.debug("Could not update tunnel active marker", exc_info=True)
 
 
 # --- Windows (WireGuard tunnel service) -------------------------------------------------
 
 def _activate_windows():
     wg_exe = find_wireguard_exe()
-    # Uninstall existing service if present, then install fresh config
     run_hidden([wg_exe, "/uninstalltunnelservice", TUNNEL_NAME])
     result = run_hidden([wg_exe, "/installtunnelservice", CONFIG_PATH], check=False)
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "").strip()
+        _set_active_marker(False)
         return False, f"Activation failed: {err or result.returncode}"
+    _set_active_marker(True)
     return True, "Tunnel activated!"
 
 
@@ -139,6 +159,7 @@ def _deactivate_windows():
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "").strip().lower()
         if "not found" in err:
+            _set_active_marker(False)
             return False, "Tunnel not active."
         return False, f"Deactivation failed: {(result.stderr or result.stdout or '').strip()}"
 
@@ -147,11 +168,13 @@ def _deactivate_windows():
     elapsed = 0.0
     while elapsed < max_wait:
         if not is_tunnel_active(retries=1, delay=0):
+            _set_active_marker(False)
             logger.info("Tunnel successfully deactivated")
             return True, "Tunnel deactivated!"
         time.sleep(poll_interval)
         elapsed += poll_interval
 
+    _set_active_marker(False)
     return True, "Tunnel deactivation requested (status may take a moment to update)"
 
 
@@ -165,9 +188,7 @@ def _is_active_windows():
 
     if result.returncode != 0:
         return False
-    if "running" in output:
-        return True
-    return False
+    return "running" in output
 
 
 # --- macOS / Unix (wg-quick) ------------------------------------------------------------
@@ -182,9 +203,7 @@ def _wg_quick_command(action: str) -> list[str]:
     config = CONFIG_PATH
 
     use_homebrew_bash = bool(
-        IS_MACOS
-        and bash
-        and bash not in ("/bin/bash", "/usr/bin/bash")
+        IS_MACOS and bash and bash not in ("/bin/bash", "/usr/bin/bash")
     )
     if use_homebrew_bash:
         return [bash, wg_quick, action, config]
@@ -192,28 +211,30 @@ def _wg_quick_command(action: str) -> list[str]:
 
 
 def _activate_macos():
-    # Bring down first so reconnect/refresh replaces the tunnel cleanly (parity with Windows)
-    down = run_privileged(_wg_quick_command("down"), timeout=60)
-    if down.returncode != 0:
-        combined = f"{down.stdout or ''}{down.stderr or ''}".lower()
-        # "is not a WireGuard interface" / "does not exist" are fine on first connect
-        if not any(
-            needle in combined
-            for needle in (
-                "is not a wireguard interface",
-                "does not exist",
-                "no such file",
-                "unable to access interface",
-                "not currently available",
-            )
-        ):
-            logger.debug("wg-quick down before activate: %s", combined.strip())
+    # Only tear down first when something looks active — avoids an extra password prompt
+    if _is_active_macos():
+        down = run_privileged(_wg_quick_command("down"), timeout=60)
+        if down.returncode != 0:
+            combined = f"{down.stdout or ''}{down.stderr or ''}".lower()
+            if not any(
+                needle in combined
+                for needle in (
+                    "is not a wireguard interface",
+                    "does not exist",
+                    "no such file",
+                    "unable to access interface",
+                    "not currently available",
+                )
+            ):
+                logger.debug("wg-quick down before activate: %s", combined.strip())
 
     up = run_privileged(_wg_quick_command("up"), timeout=90)
     if up.returncode != 0:
         err = (up.stderr or up.stdout or "").strip()
-        # osascript wraps stderr into stdout sometimes
+        _set_active_marker(False)
         return False, f"Activation failed: {err or up.returncode}"
+
+    _set_active_marker(True)
     return True, "Tunnel activated!"
 
 
@@ -230,6 +251,7 @@ def _deactivate_macos():
                 "not currently available",
             )
         ):
+            _set_active_marker(False)
             return False, "Tunnel not active."
         return False, f"Deactivation failed: {(result.stderr or result.stdout or '').strip()}"
 
@@ -237,47 +259,53 @@ def _deactivate_macos():
     poll_interval = 0.8
     elapsed = 0.0
     while elapsed < max_wait:
-        if not is_tunnel_active(retries=1, delay=0):
+        # Clear marker early so UI/status checks don't keep reporting active
+        _set_active_marker(False)
+        if not _runtime_tunnel_present():
             logger.info("Tunnel successfully deactivated")
             return True, "Tunnel deactivated!"
         time.sleep(poll_interval)
         elapsed += poll_interval
 
+    _set_active_marker(False)
     return True, "Tunnel deactivation requested (status may take a moment to update)"
 
 
-def _is_active_macos():
+def _runtime_tunnel_present() -> bool:
     """
-    Detect our tunnel without requiring root when possible.
-    Prefer matching our config's public key so utun-mapped interfaces still count.
+    Unprivileged detection of a live wg-quick tunnel on macOS/Linux.
+    wg-quick writes /var/run/wireguard/<name>.name (and often .sock).
+    Never prompts for admin.
     """
-    import subprocess
-
-    from platform_utils import subprocess_kwargs
+    runtime_dir = "/var/run/wireguard"
+    for suffix in (".name", ".sock"):
+        path = os.path.join(runtime_dir, f"{TUNNEL_NAME}{suffix}")
+        if os.path.exists(path):
+            return True
 
     wg = find_wg()
     if not wg:
         return False
 
-    result = run_hidden([wg, "show", "all", "dump"], timeout=5)
-    output = result.stdout or ""
-    if result.returncode != 0 or not output.strip():
-        priv = run_privileged([wg, "show", "all", "dump"], timeout=15)
-        output = priv.stdout or ""
+    # Unprivileged only — do not fall back to run_privileged here
+    show = run_hidden([wg, "show", "interfaces"], timeout=5)
+    if show.returncode == 0 and TUNNEL_NAME in (show.stdout or "").split():
+        return True
 
-    if not output.strip():
-        # Named interface fallback (works when Darwin keeps the config basename)
-        named = run_hidden([wg, "show", TUNNEL_NAME], timeout=5)
-        if named.returncode == 0 and (named.stdout or "").strip():
-            return True
-        interfaces = run_hidden([wg, "show", "interfaces"], timeout=5)
-        return TUNNEL_NAME in (interfaces.stdout or "").split()
+    dump = run_hidden([wg, "show", "all", "dump"], timeout=5)
+    output = dump.stdout or ""
+    if dump.returncode != 0 or not output.strip():
+        return False
 
     private_key = _read_config_value("PrivateKey")
     listen_port = _read_config_value("ListenPort")
 
     if private_key:
         try:
+            import subprocess
+
+            from platform_utils import subprocess_kwargs
+
             proc = subprocess.run(
                 [wg, "pubkey"],
                 input=private_key + "\n",
@@ -290,12 +318,39 @@ def _is_active_macos():
             if public_key and public_key in output:
                 return True
         except Exception:
-            logger.debug("Could not derive public key for tunnel status check", exc_info=True)
+            logger.debug(
+                "Could not derive public key for tunnel status check", exc_info=True
+            )
 
     if listen_port and re.search(rf"\b{re.escape(listen_port)}\b", output):
         return True
 
     return bool(re.search(rf"(^|\s){re.escape(TUNNEL_NAME)}(\s|$)", output))
+
+
+def _is_active_macos():
+    """
+    Status check that never shows an admin password dialog.
+    Prefer live runtime evidence; use the connect/disconnect marker only when
+    /var/run/wireguard is not readable (some setups lock that directory down).
+    """
+    if _runtime_tunnel_present():
+        return True
+
+    runtime_dir = "/var/run/wireguard"
+    marker_on = os.path.exists(TUNNEL_ACTIVE_MARKER)
+
+    if marker_on and (
+        not os.path.isdir(runtime_dir)
+        or not os.access(runtime_dir, os.R_OK | os.X_OK)
+    ):
+        return True
+
+    if marker_on:
+        # Runtime dir is visible and our tunnel files are gone — clear stale state
+        _set_active_marker(False)
+
+    return False
 
 
 def _read_config_value(key: str) -> str | None:
