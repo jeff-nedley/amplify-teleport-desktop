@@ -11,6 +11,7 @@ from logging.handlers import RotatingFileHandler
 
 from config import ICON_PATH_PNG
 from platform_utils import (
+    IS_MACOS,
     ensure_wireguard_available,
     get_log_path,
     run_elevated_startup,
@@ -42,12 +43,10 @@ def main():
     # macOS: app stays user-level; tunnel commands prompt via native admin dialog.
     run_elevated_startup()
 
-    # On macOS, Tk must create NSApplication before pystray imports AppKit.
-    # Importing pystray first causes: -[NSApplication _setup:]: unrecognized selector
     icon_holder = {"icon": None}
     exiting = {"done": False}
 
-    def stop_app():
+    def stop_app(*_args):
         if exiting["done"]:
             return
         exiting["done"] = True
@@ -57,37 +56,78 @@ def main():
                 tray.stop()
         except Exception:
             pass
-        root = create_control_window(icon=tray, quit_callback=None)
         try:
             root.after(0, root.destroy)
         except Exception:
-            pass
+            try:
+                root.destroy()
+            except Exception:
+                pass
         threading.Timer(0.4, lambda: os._exit(0)).start()
 
-    def on_quit_from_ui():
-        stop_app()
-
-    root = create_control_window(icon=None, quit_callback=on_quit_from_ui)
-    # Force Tk/AppKit initialization before pystray is imported
+    # Create Tk first on every platform
+    root = create_control_window(icon=None, quit_callback=stop_app)
     root.update_idletasks()
     show_control_window(icon=None)
 
     ok, msg = ensure_wireguard_available()
     if not ok:
         logger.error(msg)
-        # Defer toast so the UI is already alive
         root.after(
             300,
-            lambda: show_toast("WireGuard Required", msg.replace("\n", " ")),
+            lambda m=msg: show_toast("WireGuard Required", m.replace("\n", " ")),
         )
 
-    # Lazy-import pystray only after Tk is up (critical on macOS)
+    if IS_MACOS:
+        _setup_macos_dock(root, stop_app)
+    else:
+        _setup_windows_tray(root, icon_holder, stop_app)
+
+    logger.info("Application started on %s", sys.platform)
+
+    try:
+        root.mainloop()
+    finally:
+        tray = icon_holder.get("icon")
+        if tray is not None:
+            try:
+                tray.stop()
+            except Exception:
+                pass
+
+
+def _setup_macos_dock(root, stop_app):
+    """
+    macOS: do not use pystray.
+
+    pystray + Tk/CustomTkinter on macOS commonly crashes with SIGTRAP
+    ('zsh: trace trap') because both want to own NSApplication / the main thread.
+
+    Closing the window hides it; clicking the Dock icon brings it back.
+    Use Quit in the control window (or Cmd+Q) to fully exit.
+    """
+
+    def reopen(*_args):
+        show_control_window(icon=None)
+
+    try:
+        root.createcommand("tk::mac::ReopenApplication", reopen)
+    except Exception:
+        logger.debug("Could not register macOS Dock reopen handler", exc_info=True)
+
+    try:
+        root.createcommand("tk::mac::Quit", stop_app)
+    except Exception:
+        logger.debug("Could not register macOS Quit handler", exc_info=True)
+
+
+def _setup_windows_tray(root, icon_holder, stop_app):
+    """Windows: system tray via pystray (safe alongside Tk on Win32)."""
     import pystray
 
     image = Image.open(ICON_PATH_PNG)
 
     def request_show(icon=None, item=None):
-        """Marshal UI show onto the Tk main thread."""
         try:
             root.after(0, lambda: show_control_window(icon_holder.get("icon")))
         except Exception:
@@ -113,20 +153,8 @@ def main():
     icon_holder["icon"] = icon
     set_tray_icon(icon)
 
-    logger.info("Application started on %s", sys.platform)
-
-    # Tk owns the main thread. Tray / menu-bar runs in a daemon thread.
-    # (On macOS this only works reliably if Tk initialized NSApplication first.)
     tray_thread = threading.Thread(target=icon.run, name="pystray", daemon=True)
     tray_thread.start()
-
-    try:
-        root.mainloop()
-    finally:
-        try:
-            icon.stop()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":

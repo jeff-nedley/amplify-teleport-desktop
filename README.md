@@ -13,7 +13,7 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 - Connect, disconnect, and manage your Teleport tunnel from a simple control window
 - One-time Teleport PIN entry (stored securely in the app data folder)
 - Reconnect without re-entering the PIN
-- System tray / menu bar icon for quick access
+- System tray icon on Windows; Dock icon on macOS for quick re-open
 - Desktop notifications for status and errors
 - Installer automatically installs WireGuard when it is missing
 
@@ -53,10 +53,10 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 The app requests Administrator rights at startup (required for the WireGuard tunnel service).
 
 ### macOS
-1. Click the menu bar icon → **Open Controls**
+1. Use the control window that opens at launch. If you close it, click the **Dock** icon to bring it back
 2. **First time:** click **Connect**, enter your 5-character Teleport PIN, and wait for the tunnel to connect
 3. Later: use **Connect**, **Disconnect**, or **Delete Existing Configuration** to reset and enter a new PIN
-4. Click **Quit** to fully exit the application
+4. Click **Quit** (or Cmd+Q) to fully exit the application
 
 macOS may prompt for an administrator password when bringing the tunnel up or down.
 
