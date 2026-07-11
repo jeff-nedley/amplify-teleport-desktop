@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import uuid
 
 from config import ICON_PATH, ICON_PATH_ICO, ICON_PATH_PNG
@@ -68,35 +69,39 @@ def _macos_icon_path(icon_path=None) -> str | None:
 
 def _notify_macos(title, message, icon_path=None):
     """
-    Post from this process (not osascript) so banners are not attributed to
-    Script Editor. Prefer UserNotifications with an image attachment; fall back
-    to NSUserNotification + contentImage; osascript only as last resort.
+    Post from this process (not osascript).
+
+    Notification Center always uses the *delivering app's* bundle icon on the
+    left — no second content/attachment image, so only one icon appears.
+    From source that is Python; from the DMG/.app it is AmpliFi Teleport.
     """
     path = _macos_icon_path(icon_path)
 
-    try:
-        from macos_tray import set_dock_icon
+    # When packaged, keep the Dock/app icon aligned with the bundle artwork.
+    if getattr(sys, "frozen", False):
+        try:
+            from macos_tray import set_dock_icon
 
-        set_dock_icon(path)
-    except Exception:
-        logger.debug("Could not refresh app icon before notification", exc_info=True)
+            set_dock_icon(path)
+        except Exception:
+            logger.debug(
+                "Could not refresh app icon before notification", exc_info=True
+            )
 
-    if _notify_macos_user_notifications(title, message, path):
+    if _notify_macos_user_notifications(title, message):
         return
-    if _notify_macos_nsusernotification(title, message, path):
+    if _notify_macos_nsusernotification(title, message):
         return
 
     logger.warning("AppKit notification failed; falling back to osascript")
     _notify_macos_osascript(title, message)
 
 
-def _notify_macos_user_notifications(title, message, icon_path: str | None) -> bool:
-    """macOS 10.14+ UserNotifications with optional image attachment."""
+def _notify_macos_user_notifications(title, message) -> bool:
+    """macOS 10.14+ UserNotifications (identity icon only — no attachment)."""
     try:
-        from Foundation import NSURL
         from UserNotifications import (
             UNMutableNotificationContent,
-            UNNotificationAttachment,
             UNNotificationRequest,
             UNNotificationSound,
             UNUserNotificationCenter,
@@ -124,25 +129,6 @@ def _notify_macos_user_notifications(title, message, icon_path: str | None) -> b
         except Exception:
             pass
 
-        if icon_path:
-            try:
-                url = NSURL.fileURLWithPath_(icon_path)
-                attachment, error = (
-                    UNNotificationAttachment.attachmentWithIdentifier_URL_options_error_(
-                        "amplifi-icon",
-                        url,
-                        None,
-                        None,
-                    )
-                )
-                if attachment is not None:
-                    content.setAttachments_([attachment])
-                    _MACOS_NOTIFICATION_REFS.append(attachment)
-                elif error is not None:
-                    logger.debug("Notification attachment error: %s", error)
-            except Exception:
-                logger.debug("Failed to attach notification icon", exc_info=True)
-
         request = UNNotificationRequest.requestWithIdentifier_content_trigger_(
             f"amplifi-{uuid.uuid4()}",
             content,
@@ -162,10 +148,9 @@ def _notify_macos_user_notifications(title, message, icon_path: str | None) -> b
         return False
 
 
-def _notify_macos_nsusernotification(title, message, icon_path: str | None) -> bool:
-    """Legacy NSUserNotification with contentImage."""
+def _notify_macos_nsusernotification(title, message) -> bool:
+    """Legacy NSUserNotification (identity icon only — no contentImage)."""
     try:
-        from AppKit import NSImage
         from Foundation import NSUserNotification, NSUserNotificationCenter
     except Exception:
         return False
@@ -179,15 +164,6 @@ def _notify_macos_nsusernotification(title, message, icon_path: str | None) -> b
             note.setSoundName_("NSUserNotificationDefaultSoundName")
         except Exception:
             pass
-
-        if icon_path:
-            image = NSImage.alloc().initWithContentsOfFile_(icon_path)
-            if image is not None:
-                try:
-                    note.setContentImage_(image)
-                except Exception:
-                    pass
-                _MACOS_NOTIFICATION_REFS.append(image)
 
         _MACOS_NOTIFICATION_REFS[:] = _MACOS_NOTIFICATION_REFS[-8:] + [note]
         NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(
