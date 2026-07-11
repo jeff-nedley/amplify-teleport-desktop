@@ -4,11 +4,10 @@
 import os
 import logging
 import tkinter as tk
-
-import customtkinter as ctk
+from tkinter import font as tkfont
 
 from config import TOKEN_FILE, UUID_FILE, CONFIG_PATH, ICON_PATH_ICO, ICON_PATH_PNG
-from platform_utils import IS_WINDOWS, corner_radius, ui_font
+from platform_utils import IS_MACOS, IS_WINDOWS, corner_radius, ui_font
 from tunnel import generate_config, activate_tunnel, deactivate_tunnel, is_tunnel_active
 from notifications import show_toast
 
@@ -35,19 +34,29 @@ _control_app = {
     "content_frame": None,
     "icon": None,
     "quit_callback": None,
+    "toolkit": None,  # "tk" | "ctk"
 }
+
+# CustomTkinter only where it renders reliably (Windows).
+# macOS uses classic Tk — CustomTkinter often paints a blank window on Mac Tk builds.
+USE_CTK = not IS_MACOS
+if USE_CTK:
+    import customtkinter as ctk
 
 
 def _set_window_icon(window):
-    """Apply the correct window icon API per OS (iconbitmap vs iconphoto)."""
+    """Apply the correct window icon API per OS."""
     try:
         if IS_WINDOWS and os.path.exists(ICON_PATH_ICO):
             window.iconbitmap(ICON_PATH_ICO)
             window.after(300, lambda: window.iconbitmap(ICON_PATH_ICO))
+        elif IS_MACOS:
+            # Avoid tk.PhotoImage(PNG) on macOS — it can break widget painting entirely.
+            return
         elif os.path.exists(ICON_PATH_PNG):
             icon_image = tk.PhotoImage(file=ICON_PATH_PNG)
             window.iconphoto(True, icon_image)
-            window._amplifi_icon_ref = icon_image  # prevent GC
+            window._amplifi_icon_ref = icon_image
     except Exception:
         logger.debug("Could not set window icon", exc_info=True)
 
@@ -59,8 +68,202 @@ def _center_window(window, width, height):
     window.geometry(f"{width}x{height}+{x}+{y}")
 
 
+def _tk_font(size, weight="normal"):
+    family = "Helvetica"
+    try:
+        available = set(tkfont.families())
+        for candidate in ("Helvetica Neue", "Helvetica", "Lucida Grande", "Arial"):
+            if candidate in available:
+                family = candidate
+                break
+    except Exception:
+        pass
+    return (family, size, "bold") if weight == "bold" else (family, size)
+
+
+def _make_tk_button(parent, text, bg, command, width=28):
+    btn = tk.Button(
+        parent,
+        text=text,
+        command=command,
+        font=_tk_font(14, "bold"),
+        fg=COLORS["text"],
+        bg=bg,
+        activeforeground=COLORS["text"],
+        activebackground=bg,
+        relief="flat",
+        bd=0,
+        highlightthickness=0,
+        padx=12,
+        pady=14,
+        cursor="hand2",
+        width=width,
+    )
+    return btn
+
+
 def custom_pin_dialog(parent=None):
-    """Custom PIN input dialog with centered label."""
+    if USE_CTK:
+        return _ctk_pin_dialog(parent)
+    return _tk_pin_dialog(parent)
+
+
+def custom_confirm_dialog(title, message, parent=None):
+    if USE_CTK:
+        return _ctk_confirm_dialog(title, message, parent)
+    return _tk_confirm_dialog(title, message, parent)
+
+
+def _tk_pin_dialog(parent=None):
+    dialog = tk.Toplevel(parent) if parent else tk.Toplevel()
+    dialog.title("Teleport PIN Entry")
+    dialog.configure(bg=COLORS["bg"])
+    dialog.resizable(False, False)
+    _center_window(dialog, 350, 180)
+    if parent:
+        dialog.transient(parent)
+    dialog.grab_set()
+    dialog.focus_set()
+
+    tk.Label(
+        dialog,
+        text="Enter Teleport PIN",
+        font=_tk_font(16, "bold"),
+        fg=COLORS["text"],
+        bg=COLORS["bg"],
+    ).pack(pady=(20, 5))
+
+    def validate(P):
+        return len(P) <= 5
+
+    vcmd = (dialog.register(validate), "%P")
+    pin_entry = tk.Entry(
+        dialog,
+        font=_tk_font(16),
+        bg=COLORS["entry_bg"],
+        fg=COLORS["text"],
+        insertbackground=COLORS["text"],
+        justify="center",
+        relief="flat",
+        validate="key",
+        validatecommand=vcmd,
+    )
+    pin_entry.pack(ipady=10, padx=35, fill="x")
+    pin_entry.focus()
+
+    result = [None]
+
+    def submit():
+        pin = pin_entry.get().strip()
+        if len(pin) != 5:
+            tk.Label(
+                dialog, text="PIN must be exactly 5 characters", fg="red", bg=COLORS["bg"]
+            ).pack(pady=5)
+            return
+        result[0] = pin
+        dialog.destroy()
+
+    def cancel():
+        result[0] = None
+        dialog.destroy()
+
+    button_frame = tk.Frame(dialog, bg=COLORS["bg"])
+    button_frame.pack(pady=15)
+    tk.Button(
+        button_frame,
+        text="Cancel",
+        command=cancel,
+        font=_tk_font(13),
+        fg=COLORS["text"],
+        bg=COLORS["muted_button"],
+        relief="flat",
+        padx=20,
+        pady=8,
+        width=10,
+    ).pack(side="left", padx=10)
+    tk.Button(
+        button_frame,
+        text="Submit",
+        command=submit,
+        font=_tk_font(13),
+        fg=COLORS["text"],
+        bg=COLORS["button"],
+        relief="flat",
+        padx=20,
+        pady=8,
+        width=10,
+    ).pack(side="right", padx=10)
+
+    dialog.bind("<Return>", lambda _e: submit())
+    dialog.bind("<Escape>", lambda _e: cancel())
+    dialog.wait_window()
+    return result[0]
+
+
+def _tk_confirm_dialog(title, message, parent=None):
+    confirm = tk.Toplevel(parent) if parent else tk.Toplevel()
+    confirm.title(title)
+    confirm.configure(bg=COLORS["bg"])
+    confirm.resizable(False, False)
+    _center_window(confirm, 350, 180)
+    if parent:
+        confirm.transient(parent)
+    confirm.grab_set()
+    confirm.focus_set()
+
+    tk.Label(
+        confirm,
+        text=message,
+        font=_tk_font(14),
+        fg=COLORS["text"],
+        bg=COLORS["bg"],
+        wraplength=300,
+        justify="center",
+    ).pack(pady=20)
+
+    result = [False]
+
+    def yes():
+        result[0] = True
+        confirm.destroy()
+
+    def no():
+        result[0] = False
+        confirm.destroy()
+
+    button_frame = tk.Frame(confirm, bg=COLORS["bg"])
+    button_frame.pack(pady=10)
+    tk.Button(
+        button_frame,
+        text="No",
+        command=no,
+        font=_tk_font(13),
+        fg=COLORS["text"],
+        bg=COLORS["muted_button"],
+        relief="flat",
+        padx=20,
+        pady=8,
+        width=10,
+    ).pack(side="left", padx=10)
+    tk.Button(
+        button_frame,
+        text="Yes",
+        command=yes,
+        font=_tk_font(13),
+        fg=COLORS["text"],
+        bg=COLORS["button"],
+        relief="flat",
+        padx=20,
+        pady=8,
+        width=10,
+    ).pack(side="right", padx=10)
+
+    confirm.bind("<Escape>", lambda _e: no())
+    confirm.wait_window()
+    return result[0]
+
+
+def _ctk_pin_dialog(parent=None):
     dialog = ctk.CTkToplevel(parent) if parent else ctk.CTkToplevel()
     dialog.title("Teleport PIN Entry")
     dialog.geometry("350x180")
@@ -68,23 +271,19 @@ def custom_pin_dialog(parent=None):
     dialog.configure(fg_color=COLORS["bg"])
     _set_window_icon(dialog)
     _center_window(dialog, 350, 180)
-
-    dialog.transient(parent) if parent else None
+    if parent:
+        dialog.transient(parent)
     dialog.grab_set()
     dialog.focus_set()
 
     ctk.CTkLabel(
-        dialog,
-        text="Enter Teleport PIN",
-        font=ui_font(16, "bold"),
-        text_color=COLORS["text"],
+        dialog, text="Enter Teleport PIN", font=ui_font(16, "bold"), text_color=COLORS["text"]
     ).pack(pady=(20, 5))
 
     def validate(P):
         return len(P) <= 5
 
     vcmd = (dialog.register(validate), "%P")
-
     pin_entry = ctk.CTkEntry(
         dialog,
         width=280,
@@ -105,9 +304,9 @@ def custom_pin_dialog(parent=None):
     def submit():
         pin = pin_entry.get().strip()
         if len(pin) != 5:
-            ctk.CTkLabel(
-                dialog, text="PIN must be exactly 5 characters", text_color="red"
-            ).pack(pady=5)
+            ctk.CTkLabel(dialog, text="PIN must be exactly 5 characters", text_color="red").pack(
+                pady=5
+            )
             return
         result[0] = pin
         dialog.destroy()
@@ -118,7 +317,6 @@ def custom_pin_dialog(parent=None):
 
     button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
     button_frame.pack(pady=10)
-
     ctk.CTkButton(
         button_frame,
         text="Cancel",
@@ -129,7 +327,6 @@ def custom_pin_dialog(parent=None):
         corner_radius=corner_radius(10),
         command=cancel,
     ).pack(side="left", padx=10)
-
     ctk.CTkButton(
         button_frame,
         text="Submit",
@@ -143,13 +340,11 @@ def custom_pin_dialog(parent=None):
 
     dialog.bind("<Return>", lambda _e: submit())
     dialog.bind("<Escape>", lambda _e: cancel())
-
     dialog.wait_window()
     return result[0]
 
 
-def custom_confirm_dialog(title, message, parent=None):
-    """Custom confirmation dialog."""
+def _ctk_confirm_dialog(title, message, parent=None):
     confirm_dialog = ctk.CTkToplevel(parent) if parent else ctk.CTkToplevel()
     confirm_dialog.title(title)
     confirm_dialog.geometry("350x180")
@@ -157,7 +352,6 @@ def custom_confirm_dialog(title, message, parent=None):
     confirm_dialog.configure(fg_color=COLORS["bg"])
     _set_window_icon(confirm_dialog)
     _center_window(confirm_dialog, 350, 180)
-
     if parent:
         confirm_dialog.transient(parent)
     confirm_dialog.grab_set()
@@ -173,7 +367,6 @@ def custom_confirm_dialog(title, message, parent=None):
 
     button_frame = ctk.CTkFrame(confirm_dialog, fg_color="transparent")
     button_frame.pack(pady=10)
-
     result = [False]
 
     def yes():
@@ -194,7 +387,6 @@ def custom_confirm_dialog(title, message, parent=None):
         corner_radius=corner_radius(10),
         command=no,
     ).pack(side="left", padx=10)
-
     ctk.CTkButton(
         button_frame,
         text="Yes",
@@ -250,8 +442,40 @@ def refresh_control_buttons():
             widget.destroy()
 
         tunnel_active = is_tunnel_active(retries=1, delay=0)
-        radius = corner_radius(20)
 
+        def action_and_refresh(action_func):
+            action_func(icon=None, item=None)
+            root.after(1500, refresh_control_buttons)
+
+        if _control_app.get("toolkit") == "tk":
+            if not tunnel_active:
+                _make_tk_button(
+                    content_frame, "Connect", COLORS["button"],
+                    lambda: action_and_refresh(on_connect),
+                ).pack(pady=10)
+            if tunnel_active:
+                _make_tk_button(
+                    content_frame, "Disconnect", COLORS["button"],
+                    lambda: action_and_refresh(on_disconnect),
+                ).pack(pady=10)
+            if (
+                os.path.exists(TOKEN_FILE)
+                or os.path.exists(UUID_FILE)
+                or os.path.exists(CONFIG_PATH)
+            ):
+                _make_tk_button(
+                    content_frame,
+                    "Delete Existing Configuration",
+                    COLORS["button"],
+                    lambda: action_and_refresh(on_delete_config),
+                ).pack(pady=10)
+            _make_tk_button(
+                content_frame, "Quit", COLORS["danger"], quit_application
+            ).pack(pady=10)
+            return
+
+        # CustomTkinter path (Windows)
+        radius = corner_radius(20)
         button_style = {
             "width": 280,
             "height": 50,
@@ -259,12 +483,6 @@ def refresh_control_buttons():
             "text_color": COLORS["text"],
             "font": ui_font(14, "bold"),
         }
-
-        def action_and_refresh(action_func):
-            action_func(icon=None, item=None)
-            # Defer refresh so WireGuard service / wg-quick state can settle
-            root.after(1500, refresh_control_buttons)
-
         if not tunnel_active:
             ctk.CTkButton(
                 content_frame,
@@ -274,7 +492,6 @@ def refresh_control_buttons():
                 command=lambda: action_and_refresh(on_connect),
                 **button_style,
             ).pack(pady=10)
-
         if tunnel_active:
             ctk.CTkButton(
                 content_frame,
@@ -284,7 +501,6 @@ def refresh_control_buttons():
                 command=lambda: action_and_refresh(on_disconnect),
                 **button_style,
             ).pack(pady=10)
-
         if (
             os.path.exists(TOKEN_FILE)
             or os.path.exists(UUID_FILE)
@@ -298,7 +514,6 @@ def refresh_control_buttons():
                 command=lambda: action_and_refresh(on_delete_config),
                 **button_style,
             ).pack(pady=10)
-
         ctk.CTkButton(
             content_frame,
             text="Quit",
@@ -309,15 +524,6 @@ def refresh_control_buttons():
         ).pack(pady=10)
     except Exception:
         logger.error("Failed to refresh control buttons", exc_info=True)
-        try:
-            ctk.CTkLabel(
-                content_frame,
-                text="Unable to load controls. Check the log for details.",
-                text_color=COLORS["text"],
-                font=ui_font(13),
-            ).pack(pady=20)
-        except Exception:
-            pass
 
 
 def quit_application(icon=None, item=None):
@@ -358,6 +564,55 @@ def create_control_window(icon=None, quit_callback=None):
             _control_app["quit_callback"] = quit_callback
         return _control_app["root"]
 
+    if USE_CTK:
+        return _create_ctk_window(icon, quit_callback)
+    return _create_tk_window(icon, quit_callback)
+
+
+def _create_tk_window(icon=None, quit_callback=None):
+    """Native Tk UI for macOS — reliable rendering + same colors/layout."""
+    root = tk.Tk()
+    root.title("AmpliFi Teleport for Desktop")
+    root.geometry("350x320")
+    root.resizable(False, False)
+    root.configure(bg=COLORS["bg"])
+    _center_window(root, 350, 320)
+
+    header = tk.Frame(root, bg=COLORS["header"], height=48)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+    tk.Label(
+        header,
+        text="AmpliFi Teleport for Desktop",
+        font=_tk_font(18, "bold"),
+        fg=COLORS["text"],
+        bg=COLORS["header"],
+    ).pack(expand=True)
+
+    content_frame = tk.Frame(root, bg=COLORS["bg"])
+    content_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+    tk.Label(
+        root,
+        text="Version 1.0.0",
+        font=_tk_font(10),
+        fg=COLORS["muted_text"],
+        bg=COLORS["bg"],
+    ).pack(side="bottom", pady=(0, 10))
+
+    _control_app["root"] = root
+    _control_app["content_frame"] = content_frame
+    _control_app["icon"] = icon
+    _control_app["quit_callback"] = quit_callback
+    _control_app["toolkit"] = "tk"
+
+    root.protocol("WM_DELETE_WINDOW", _hide_control_window)
+    refresh_control_buttons()
+    logger.info("Created native Tk control window (macOS)")
+    return root
+
+
+def _create_ctk_window(icon=None, quit_callback=None):
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
 
@@ -371,7 +626,6 @@ def create_control_window(icon=None, quit_callback=None):
 
     header_frame = ctk.CTkFrame(root, fg_color=COLORS["header"], corner_radius=0)
     header_frame.pack(fill="x", pady=(0, 10))
-
     ctk.CTkLabel(
         header_frame,
         text="AmpliFi Teleport for Desktop",
@@ -393,6 +647,7 @@ def create_control_window(icon=None, quit_callback=None):
     _control_app["content_frame"] = content_frame
     _control_app["icon"] = icon
     _control_app["quit_callback"] = quit_callback
+    _control_app["toolkit"] = "ctk"
 
     root.protocol("WM_DELETE_WINDOW", _hide_control_window)
     refresh_control_buttons()
@@ -400,14 +655,9 @@ def create_control_window(icon=None, quit_callback=None):
 
 
 def open_options_window(icon=None, item=None):
-    """
-    Backwards-compatible entry: show controls.
-    Prefer show_control_window from the tray; this still works for direct calls.
-    """
     show_control_window(icon=icon, item=item)
     root = _control_app.get("root")
     if root is not None and _control_app.get("quit_callback") is None:
-        # Legacy path when not managed by main.py run loop
         root.mainloop()
 
 

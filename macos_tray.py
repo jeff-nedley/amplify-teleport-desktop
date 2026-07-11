@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Jeff Nedley
 # Licensed under the MIT License (see LICENSE for details)
 
-"""macOS menu bar (status item) integration via AppKit — safe with Tk/CustomTkinter."""
+"""macOS menu bar (status item) integration via AppKit — safe with Tk."""
 
 from __future__ import annotations
 
@@ -17,15 +17,15 @@ _KEEP_ALIVE = {}
 def start_macos_menu_bar(root, icon_path: str, on_open, on_quit):
     """
     Create a menu bar status item on the existing Tk/Cocoa NSApplication.
-
-    Unlike pystray, this does not start a second AppKit run loop or background
-    thread, so it avoids the macOS SIGTRAP crash with CustomTkinter.
+    Must be called after the Tk root exists (so NSApp is initialized).
     """
     try:
         from AppKit import (
+            NSApplication,
+            NSApplicationActivationPolicyRegular,
+            NSImage,
             NSMenu,
             NSMenuItem,
-            NSImage,
             NSStatusBar,
             NSVariableStatusItemLength,
         )
@@ -33,8 +33,16 @@ def start_macos_menu_bar(root, icon_path: str, on_open, on_quit):
     except ImportError as exc:
         raise RuntimeError(
             "pyobjc-framework-Cocoa is required for the macOS menu bar icon. "
-            "Install with: pip install pyobjc-framework-Cocoa"
+            "Install with: pip install 'pyobjc-framework-Cocoa>=10.0'"
         ) from exc
+
+    app = NSApplication.sharedApplication()
+    # Keep Regular so the control window can come to the front reliably.
+    # (Accessory can prevent Tk windows from activating when run from python.)
+    try:
+        app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    except Exception:
+        logger.debug("Could not set NSApplication activation policy", exc_info=True)
 
     class MenuHandler(NSObject):
         def openControls_(self, _sender):
@@ -56,16 +64,15 @@ def start_macos_menu_bar(root, icon_path: str, on_open, on_quit):
     )
     button = status_item.button()
     if button is not None:
+        loaded = False
         if icon_path and os.path.exists(icon_path):
             image = NSImage.alloc().initWithContentsOfFile_(icon_path)
             if image is not None:
-                # Menu bar icons are typically ~18pt; keep color (not template)
                 image.setSize_((18.0, 18.0))
                 image.setTemplate_(False)
                 button.setImage_(image)
-            else:
-                button.setTitle_("AT")
-        else:
+                loaded = True
+        if not loaded:
             button.setTitle_("AT")
         button.setToolTip_("AmpliFi Teleport for Desktop")
 
@@ -95,6 +102,7 @@ def start_macos_menu_bar(root, icon_path: str, on_open, on_quit):
     _KEEP_ALIVE["menu"] = menu
     _KEEP_ALIVE["open_item"] = open_item
     _KEEP_ALIVE["quit_item"] = quit_item
+    _KEEP_ALIVE["app"] = app
 
     logger.info("macOS menu bar status item started")
     return status_item

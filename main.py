@@ -115,7 +115,7 @@ def main():
 def _setup_macos_tray(root, stop_app):
     """
     macOS menu bar status item via AppKit (same NSApplication as Tk).
-    Avoids pystray, which crashes with CustomTkinter (SIGTRAP).
+    Scheduled shortly after startup so NSApp is fully ready.
     """
 
     def on_open():
@@ -134,24 +134,25 @@ def _setup_macos_tray(root, stop_app):
     except Exception:
         logger.debug("Could not register macOS Quit handler", exc_info=True)
 
-    try:
-        from macos_tray import start_macos_menu_bar
+    def _start():
+        try:
+            from macos_tray import start_macos_menu_bar
 
-        start_macos_menu_bar(
-            root,
-            ICON_PATH_PNG,
-            on_open=on_open,
-            on_quit=stop_app,
-        )
-    except Exception:
-        logger.error(
-            "Could not start macOS menu bar icon; Dock reopen still works",
-            exc_info=True,
-        )
-        show_toast(
-            "Menu Bar Unavailable",
-            "Install pyobjc-framework-Cocoa for the menu bar icon, or use the Dock icon.",
-        )
+            start_macos_menu_bar(
+                root,
+                ICON_PATH_PNG,
+                on_open=on_open,
+                on_quit=stop_app,
+            )
+        except Exception as exc:
+            logger.error("Could not start macOS menu bar icon: %s", exc, exc_info=True)
+            show_toast(
+                "Menu Bar Unavailable",
+                "Run: pip install 'pyobjc-framework-Cocoa>=10.0'",
+            )
+
+    # Defer until after the first UI paint / NSApp finishLaunching
+    root.after(200, _start)
 
 
 def _setup_windows_tray(root, icon_holder, stop_app):
