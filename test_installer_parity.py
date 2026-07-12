@@ -1,0 +1,120 @@
+# Copyright (c) 2026 Jeff Nedley
+# Licensed under the MIT License (see LICENSE for details)
+"""Checks that macOS installer assets mirror the Windows Inno setup contract."""
+
+from __future__ import annotations
+
+import os
+import re
+import unittest
+
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+class MacInstallerParityTests(unittest.TestCase):
+    def _read(self, *parts: str) -> str:
+        path = os.path.join(ROOT, *parts)
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_required_installer_files_exist(self):
+        required = [
+            "build_macos_dmg.sh",
+            "macos/installer/scripts/postinstall",
+            "macos/installer/resources/welcome.html",
+            "macos/installer/resources/conclusion.html",
+            "macos/uninstaller/Uninstall AmpliFi Teleport.command",
+            "app_installer_script.iss",
+        ]
+        for rel in required:
+            self.assertTrue(os.path.exists(os.path.join(ROOT, rel)), rel)
+
+    def test_postinstall_mirrors_innos_wireguard_flow(self):
+        post = self._read("macos/installer/scripts/postinstall")
+        self.assertIn("is_wireguard_installed", post)
+        self.assertIn("WIREGUARD_WAS_MISSING", post)
+        self.assertIn("install_wireguard_silently", post)
+        self.assertIn("wireguard-tools", post)
+        self.assertIn("Launching", post)
+
+    def test_uninstaller_asks_about_wireguard(self):
+        uninstall = self._read(
+            "macos/uninstaller/Uninstall AmpliFi Teleport.command"
+        )
+        self.assertIn("Do you also want to uninstall WireGuard?", uninstall)
+        self.assertIn("is_wireguard_installed", uninstall)
+        self.assertIn("Uninstall AmpliFi Teleport.app", uninstall)
+
+    def test_dmg_stages_uninstaller_app(self):
+        script = self._read("build_macos_dmg.sh")
+        self.assertIn("stage_uninstaller_app", script)
+        self.assertIn("Uninstall AmpliFi Teleport.app", script)
+        self.assertIn("CFBundleDisplayName", script)
+        self.assertIn("CFBundleIconFile", script)
+        self.assertIn("uninstall-icon.png", script)
+        self.assertTrue(
+            os.path.exists(os.path.join(ROOT, "macos/uninstaller/uninstall-icon.png"))
+        )
+
+    def test_inno_still_has_wireguard_silent_install(self):
+        iss = self._read("app_installer_script.iss")
+        self.assertIn("IsWireGuardInstalled", iss)
+        self.assertIn("WireGuardWasMissing", iss)
+        self.assertIn("/qn", iss)
+        self.assertIn("Do you also want to uninstall WireGuard?", iss)
+        self.assertIn("OutputDir=dist", iss)
+        self.assertIn('Source: "dist\\{#MyAppExeName}"', iss)
+        self.assertNotIn("C:\\Users\\jnedl", iss)
+
+    def test_dmg_build_script_produces_named_setup_artifact(self):
+        script = self._read("build_macos_dmg.sh")
+        self.assertIn("Amplifi Teleport For Desktop Setup-", script)
+        self.assertIn("productbuild", script)
+        self.assertIn("hdiutil", script)
+        self.assertIn("postinstall", script)
+        self.assertIn('VERSION="$(tr -d', script)
+        self.assertIn("clean_macos_dist", script)
+
+    def test_version_is_centralized(self):
+        version_path = os.path.join(ROOT, "VERSION")
+        self.assertTrue(os.path.exists(version_path), "VERSION file missing")
+        with open(version_path, encoding="utf-8") as handle:
+            version = handle.read().strip()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+")
+
+        from config import APP_VERSION
+
+        self.assertEqual(APP_VERSION, version)
+
+        iss = self._read("app_installer_script.iss")
+        self.assertIn('#include "version.iss"', iss)
+        version_iss = self._read("version.iss")
+        self.assertIn(f'#define MyAppVersion "{version}"', version_iss)
+
+    def test_release_scripts_exist(self):
+        for rel in ("build_release.sh", "build_release.ps1", "build_exe.ps1", "run_tests.sh"):
+            self.assertTrue(os.path.exists(os.path.join(ROOT, rel)), rel)
+        script = self._read("build_release.sh")
+        self.assertIn("build_macos_dmg.sh", script)
+        self.assertIn("build_exe.ps1", script)
+        self.assertIn("--macos", script)
+        self.assertIn("--windows", script)
+        self.assertIn("run_tests.sh", script)
+        self.assertIn("--skip-tests", script)
+
+        ps1 = self._read("build_release.ps1")
+        self.assertIn("SkipTests", ps1)
+        self.assertIn("Invoke-UnitTests", ps1)
+
+        dmg = self._read("build_macos_dmg.sh")
+        self.assertIn("run_tests.sh", dmg)
+        self.assertIn("--skip-tests", dmg)
+
+        exe = self._read("build_exe.ps1")
+        self.assertIn("SkipTests", exe)
+        self.assertIn("Invoke-UnitTests", exe)
+
+
+if __name__ == "__main__":
+    unittest.main()

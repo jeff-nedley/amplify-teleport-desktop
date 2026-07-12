@@ -12,29 +12,50 @@ import socket
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
 from aiortc.sdp import grouplines, parse_attr
 
+from platform_utils import find_wg, subprocess_kwargs
+
 ICE_STUN_SERVER = "stun:global.stun.twilio.com:3478"
 
 REQUEST_DEVICE_TOKEN_URL = "https://client.amplifi.com/api/deviceToken/mlRequestClientAccess"
 ICE_CONFIG_URL = "https://client.amplifi.com/api/deviceToken/mlIceConfig"
 SIGNALING_URL = "https://client.amplifi.com/api/deviceToken/mlClientConnect"
 
-# Decides the device icon in the router control panel
+# AmpliFi's API expects a mobile platform label (controls router UI icon / handshake).
+# Do not send "macOS"/"Windows" — that can cause connect failures (e.g. error 10).
 DEVICE_PLATFORM = "iOS"
+
+# Human-readable hints for known AmpliFi API error codes
+_API_ERROR_HINTS = {
+    10: (
+        "AmpliFi rejected the Teleport handshake (error 10). "
+        "Make sure you are NOT on your AmpliFi home Wi‑Fi (use cellular or another network), "
+        "and that your Teleport PIN is still valid."
+    ),
+}
 
 logger = logging.getLogger("AmpliFi Teleport for Desktop")
 
+
 def _generate_wg_keys():
-    privateKey = subprocess.check_output(["wg", "genkey"],
-                                        encoding="utf8").strip()
+    wg = find_wg()
+    if not wg:
+        raise Exception("WireGuard 'wg' tool not found. Install WireGuard and ensure wg is on PATH.")
 
-    publicKeyProcess = subprocess.Popen(["wg", "pubkey"],
-                                        stdout = subprocess.PIPE,
-                                        stdin = subprocess.PIPE,
-                                        encoding="utf8")
+    kwargs = subprocess_kwargs()
+    private_key = subprocess.check_output(
+        [wg, "genkey"], encoding="utf8", **kwargs
+    ).strip()
 
-    publicKey = publicKeyProcess.communicate(input=privateKey)[0].strip()
+    public_key_process = subprocess.Popen(
+        [wg, "pubkey"],
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+        encoding="utf8",
+        **kwargs,
+    )
+    public_key = public_key_process.communicate(input=private_key)[0].strip()
+    return private_key, public_key
 
-    return privateKey, publicKey
 
 def _get_device_name():
     return socket.gethostname()
@@ -85,10 +106,13 @@ def _get_remote_description(localDescription, deviceToken):
     answerAndSuccess = connectResponse.json()
 
     if not answerAndSuccess["success"]:
-        if answerAndSuccess["error"]:
-            raise Exception("Connect request failed (%s)" % answerAndSuccess["error"])
-        else:
-            raise Exception("Connect request failed")
+        err = answerAndSuccess.get("error")
+        hint = _API_ERROR_HINTS.get(err) or _API_ERROR_HINTS.get(str(err))
+        if hint:
+            raise Exception(hint)
+        if err:
+            raise Exception("Connect request failed (%s)" % err)
+        raise Exception("Connect request failed")
 
     answer = answerAndSuccess["answer"]
     return RTCSessionDescription(sdp=answer, type="answer")
@@ -163,8 +187,7 @@ async def _connect_device_peer(pc, deviceToken):
 
         logger.debug("Received remote description: %s" % remoteDescription)
 
-        loop = asyncio.get_event_loop()
-        configFuture = loop.create_future()
+        configFuture = asyncio.get_running_loop().create_future()
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
@@ -188,6 +211,7 @@ async def _connect_device_peer(pc, deviceToken):
     except Exception as e:
         logger.error(e)
         await pc.close()
+        raise
 
 def generate_client_hint():
     return str(uuid.uuid4()).upper()
@@ -212,6 +236,24 @@ def get_device_token(clientHint, pin):
 
     return deviceTokenAndSuccess["client_id"]
 
+
+def _ensure_event_loop():
+    """Return an asyncio loop for this thread (creates one for QThread workers)."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            return loop
+    except RuntimeError:
+        pass
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop
+
+
 def connect_device(deviceToken):
     stun = RTCIceServer(urls=ICE_STUN_SERVER)
     config = RTCConfiguration([stun])
@@ -219,10 +261,14 @@ def connect_device(deviceToken):
 
     coro = _connect_device_peer(pc, deviceToken)
 
-    loop = asyncio.get_event_loop()
+    loop = _ensure_event_loop()
     try:
-        return loop.run_until_complete(coro)  
-    except KeyboardInterrupt:
-        pass
+        result = loop.run_until_complete(coro)
+        if not result:
+            raise Exception("Teleport handshake failed to produce a WireGuard config.")
+        return result
     finally:
-        loop.run_until_complete(pc.close())
+        try:
+            loop.run_until_complete(pc.close())
+        except Exception:
+            pass

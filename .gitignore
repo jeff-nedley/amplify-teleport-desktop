@@ -6,3 +6,8 @@ dist/
 *.spec
 *.log
 *.exe
+*.app
+*.dmg
+*.pkg
+.DS_Store
+macos/installer/resources/LICENSE
