@@ -14,10 +14,12 @@
 #   .\build_exe.ps1
 #   .\build_exe.ps1 -SkipInstaller
 #   .\build_exe.ps1 -SkipClean
+#   .\build_exe.ps1 -SkipTests
 
 param(
     [switch]$SkipInstaller,
-    [switch]$SkipClean
+    [switch]$SkipClean,
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,9 +67,37 @@ function Find-ISCC {
     return $null
 }
 
+function Invoke-UnitTests {
+    Write-Step "Running unit tests"
+    $env:QT_QPA_PLATFORM = if ($env:QT_QPA_PLATFORM) { $env:QT_QPA_PLATFORM } else { "offscreen" }
+
+    $python = $null
+    foreach ($candidate in @("python", "python3")) {
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd) {
+            $python = $cmd.Source
+            break
+        }
+    }
+    if (-not $python) {
+        throw "python/python3 not found on PATH. Activate your venv first."
+    }
+
+    & $python -m unittest test_platform test_installer_parity test_tunnel_functional test_ui_functional -v
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unit tests failed (exit code $LASTEXITCODE). Fix tests before packaging."
+    }
+}
+
 $version = Get-AppVersion
 Write-Step "AmpliFi Teleport Windows release ($version)"
 Sync-VersionIss $version
+
+if (-not $SkipTests) {
+    Invoke-UnitTests
+} else {
+    Write-Step "Skipping unit tests (-SkipTests)"
+}
 
 if (-not $SkipClean) {
     Write-Step "Cleaning previous build/dist output"

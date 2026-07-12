@@ -18,6 +18,7 @@
 # Optional:
 #   --skip-app-build   (macOS) reuse existing dist/*.app
 #   --skip-installer   (Windows) PyInstaller exe only, skip Inno Setup
+#   --skip-tests       skip the pre-build unit test gate (not recommended)
 
 set -euo pipefail
 
@@ -27,10 +28,11 @@ cd "$ROOT"
 TARGET="auto"
 SKIP_APP_BUILD=0
 SKIP_INSTALLER=0
+SKIP_TESTS=0
 SET_VERSION=""
 
 usage() {
-    sed -n '2,25p' "$0" | sed 's/^# \?//'
+    sed -n '2,26p' "$0" | sed 's/^# \?//'
     exit 2
 }
 
@@ -41,6 +43,7 @@ for arg in "$@"; do
         --all) TARGET="all" ;;
         --skip-app-build) SKIP_APP_BUILD=1 ;;
         --skip-installer) SKIP_INSTALLER=1 ;;
+        --skip-tests) SKIP_TESTS=1 ;;
         --version=*) SET_VERSION="${arg#*=}" ;;
         -h|--help) usage ;;
         *)
@@ -89,8 +92,17 @@ ensure_python_deps_hint() {
     fi
 }
 
+run_tests() {
+    if [[ "$SKIP_TESTS" -eq 1 ]]; then
+        log "Skipping unit tests (--skip-tests)"
+        return 0
+    fi
+    log "Running unit tests before packaging..."
+    bash "${ROOT}/run_tests.sh" -v
+}
+
 build_macos() {
-    local args=()
+    local args=(--skip-tests)
     [[ "$SKIP_APP_BUILD" -eq 1 ]] && args+=(--skip-app-build)
     log "Building macOS Setup DMG..."
     bash "${ROOT}/build_macos_dmg.sh" "${args[@]}"
@@ -118,7 +130,7 @@ build_windows() {
         die "PowerShell not found. Run .\\build_exe.ps1 on a Windows machine."
     fi
 
-    local args=()
+    local args=(-SkipTests)
     [[ "$SKIP_INSTALLER" -eq 1 ]] && args+=(-SkipInstaller)
 
     log "Building Windows Setup exe via ${ps}..."
@@ -147,6 +159,7 @@ fi
 log "Release version: ${VERSION}"
 log "Host: ${HOST}  Target: ${TARGET}"
 ensure_python_deps_hint
+run_tests
 
 should_build_macos=0
 should_build_windows=0

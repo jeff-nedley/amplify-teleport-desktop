@@ -17,6 +17,7 @@
 # Usage:
 #   ./build_macos_dmg.sh
 #   ./build_macos_dmg.sh --skip-app-build   # reuse existing dist/*.app
+#   ./build_macos_dmg.sh --skip-tests       # skip pre-build unit tests
 #
 # Output:
 #   dist/Amplifi Teleport For Desktop Setup-<version>.dmg
@@ -31,10 +32,12 @@ APP_BUNDLE="${APP_NAME}.app"
 IDENTIFIER="com.jeffnedley.amplifiteleport"
 VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
 SKIP_APP_BUILD=0
+SKIP_TESTS=0
 
 for arg in "$@"; do
     case "$arg" in
         --skip-app-build) SKIP_APP_BUILD=1 ;;
+        --skip-tests) SKIP_TESTS=1 ;;
         --version=*) VERSION="${arg#*=}" ;;
         *)
             echo "Unknown argument: $arg" >&2
@@ -356,6 +359,13 @@ clean_macos_dist() {
 }
 
 # --- main ---
+if [[ "$SKIP_TESTS" -eq 1 ]]; then
+    log "Skipping unit tests (--skip-tests)"
+else
+    log "Running unit tests before packaging..."
+    bash "${ROOT}/run_tests.sh" -v
+fi
+
 require_macos
 require_tools
 force_rm_rf "$BUILD_DIR"

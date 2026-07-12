@@ -93,13 +93,27 @@ class MacInstallerParityTests(unittest.TestCase):
         self.assertIn(f'#define MyAppVersion "{version}"', version_iss)
 
     def test_release_scripts_exist(self):
-        for rel in ("build_release.sh", "build_release.ps1", "build_exe.ps1"):
+        for rel in ("build_release.sh", "build_release.ps1", "build_exe.ps1", "run_tests.sh"):
             self.assertTrue(os.path.exists(os.path.join(ROOT, rel)), rel)
         script = self._read("build_release.sh")
         self.assertIn("build_macos_dmg.sh", script)
         self.assertIn("build_exe.ps1", script)
         self.assertIn("--macos", script)
         self.assertIn("--windows", script)
+        self.assertIn("run_tests.sh", script)
+        self.assertIn("--skip-tests", script)
+
+        ps1 = self._read("build_release.ps1")
+        self.assertIn("SkipTests", ps1)
+        self.assertIn("Invoke-UnitTests", ps1)
+
+        dmg = self._read("build_macos_dmg.sh")
+        self.assertIn("run_tests.sh", dmg)
+        self.assertIn("--skip-tests", dmg)
+
+        exe = self._read("build_exe.ps1")
+        self.assertIn("SkipTests", exe)
+        self.assertIn("Invoke-UnitTests", exe)
 
 
 if __name__ == "__main__":
