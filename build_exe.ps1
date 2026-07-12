@@ -85,7 +85,6 @@ pyinstaller --onefile --windowed `
   --hidden-import config `
   --hidden-import tunnel `
   --hidden-import ui `
-  --hidden-import notifications `
   --hidden-import platform_utils `
   --hidden-import teleport `
   --hidden-import PySide6.QtCore `

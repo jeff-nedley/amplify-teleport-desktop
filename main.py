@@ -40,7 +40,6 @@ def main() -> None:
         macos_helper_ready,
         run_elevated_startup,
     )
-    from notifications import show_toast
     from ui import start_ui
 
     logger = logging.getLogger("AmpliFi Teleport for Desktop")
@@ -70,13 +69,11 @@ def main() -> None:
     ok, msg = ensure_wireguard_available()
     if not ok:
         logger.error(msg)
-        show_toast("WireGuard Required", msg.replace("\n", " "))
 
     if IS_MACOS and not macos_helper_ready():
-        show_toast(
-            "Admin Setup Needed",
-            "Approve the administrator prompt on next launch so Connect/Disconnect "
-            "do not ask for your password again.",
+        logger.warning(
+            "WireGuard helper not ready — approve the administrator prompt on next "
+            "connect so Connect/Disconnect do not keep asking for a password"
         )
 
     logger.info("Application started on %s", sys.platform)

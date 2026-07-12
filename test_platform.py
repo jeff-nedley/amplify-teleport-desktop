@@ -30,24 +30,6 @@ class PlatformUtilsTests(unittest.TestCase):
             path = pu.get_config_dir()
         self.assertIn("Application Support/AmpliFiTeleport", path.replace("\\", "/"))
 
-    def test_ui_font_families(self):
-        import platform_utils as pu
-
-        pu._CACHED_FONT_FAMILY = None
-        with mock.patch.object(pu, "IS_MACOS", True), mock.patch.object(
-            pu, "IS_WINDOWS", False
-        ):
-            # Without a live Tk display, helper falls back to the first macOS candidate
-            family = pu.ui_font(14, "bold")[0]
-            self.assertIn(family, {"Helvetica Neue", "Helvetica", "Lucida Grande", "Arial"})
-
-        pu._CACHED_FONT_FAMILY = None
-        with mock.patch.object(pu, "IS_MACOS", False), mock.patch.object(
-            pu, "IS_WINDOWS", True
-        ):
-            family = pu.ui_font(14, "bold")[0]
-            self.assertIn(family, {"Segoe UI", "Tahoma", "Arial"})
-
     def test_device_platform_constant(self):
         import platform_utils as pu
         import teleport

@@ -42,6 +42,5 @@ TUNNEL_NAME = "teleport"
 TUNNEL_ACTIVE_MARKER = os.path.join(CONFIG_DIR, "tunnel_active")
 
 # Icons: .ico preferred on Windows, .png on macOS (both ship in the repo)
-ICON_PATH = get_icon_path(prefer_png=False)
 ICON_PATH_PNG = get_icon_path(prefer_png=True)
 ICON_PATH_ICO = resource_path("tray-icon.ico")

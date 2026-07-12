@@ -48,7 +48,6 @@ from PySide6.QtWidgets import (
 )
 
 from config import APP_VERSION, CONFIG_PATH, ICON_PATH_ICO, ICON_PATH_PNG, TOKEN_FILE, UUID_FILE
-from notifications import show_toast
 from platform_utils import IS_MACOS, IS_WINDOWS
 from tunnel import (
     activate_tunnel,
@@ -718,8 +717,6 @@ class ControlWindow(QMainWindow):
         status_text: str,
         work_fn,
         *,
-        success_toast: tuple[str, str] | None = None,
-        show_error_toast: bool = True,
         on_finished=None,
     ):
         """Run blocking tunnel work off the UI thread so status text can paint."""
@@ -741,10 +738,6 @@ class ControlWindow(QMainWindow):
                 on_finished(ok, msg)
                 return
 
-            if ok and success_toast is not None:
-                show_toast(success_toast[0], success_toast[1])
-            elif not ok and show_error_toast and msg:
-                show_toast("Error", msg)
             if not ok and msg:
                 logger.info("Background op result: %s", msg)
             self.refresh_buttons()
@@ -767,11 +760,7 @@ class ControlWindow(QMainWindow):
                     return False, msg
                 return activate_tunnel()
 
-            self._run_in_background(
-                "Connecting",
-                work,
-                success_toast=("Status Update", "Teleport connected!"),
-            )
+            self._run_in_background("Connecting", work)
             return
 
         def work():
@@ -780,25 +769,17 @@ class ControlWindow(QMainWindow):
                 return False, msg
             return activate_tunnel()
 
-        self._run_in_background(
-            "Connecting",
-            work,
-            success_toast=("Status Update", "Teleport connected!"),
-        )
+        self._run_in_background("Connecting", work)
 
     def _on_disconnect(self):
         if self._busy:
             return
         if not is_tunnel_active():
-            show_toast("Error", "No Teleport Tunnel is active")
+            logger.info("Disconnect requested but no tunnel is active")
             self.refresh_buttons()
             return
 
-        self._run_in_background(
-            "Disconnecting",
-            deactivate_tunnel,
-            success_toast=("Status Update", "Teleport disconnected!"),
-        )
+        self._run_in_background("Disconnecting", deactivate_tunnel)
 
     def _on_delete_config(self):
         if self._busy:
@@ -817,11 +798,7 @@ class ControlWindow(QMainWindow):
                     os.remove(path)
             return True, "Configuration Deleted"
 
-        self._run_in_background(
-            "Deleting Configuration",
-            work,
-            success_toast=("Config Update", "Existing configuration deleted!"),
-        )
+        self._run_in_background("Deleting Configuration", work)
 
     def _on_quit(self):
         if getattr(self, "_quitting", False):
@@ -982,18 +959,15 @@ def start_ui():
                 hide_dock_icon()
             except Exception:
                 pass
-            show_toast(
-                "Menu Bar",
-                "Started with fallback tray icon. Look near the clock for the app icon.",
+            logger.warning(
+                "Menu bar helper failed; using fallback tray icon near the clock"
             )
     else:
         tray = create_qt_tray(window)
         _app_state["tray"] = tray
         if not QSystemTrayIcon.isSystemTrayAvailable():
-            logger.warning("System tray is not available on this desktop session")
-            show_toast(
-                "Tray Unavailable",
-                "System tray is unavailable; the control window will stay open.",
+            logger.warning(
+                "System tray is unavailable; the control window will stay open"
             )
 
     window.show_and_raise()
@@ -1127,38 +1101,32 @@ def show_pin_dialog(and_activate=True, parent=None):
 
     success, msg = generate_config(pin)
     if not success:
-        show_toast("Error", msg)
+        logger.error("PIN config generation failed: %s", msg)
         return False, msg
 
     if and_activate:
         act_success, act_msg = activate_tunnel()
         if act_success:
-            show_toast("Status Update", "Teleport connected!")
             return True, "Tunnel connected successfully"
-        show_toast("Error", act_msg)
+        logger.error("Activate after PIN failed: %s", act_msg)
         return False, act_msg
 
-    show_toast("Config Update", "Teleport configuration updated!")
     return True, "Config generated successfully"
 
 
 def on_refresh_config():
     if not os.path.exists(TOKEN_FILE):
-        show_toast("Error", "No previous configuration. Enter a PIN first.")
         return False, "No previous configuration"
     success, msg = generate_config(pin=None)
     if success:
         act_success, act_msg = activate_tunnel()
-        if act_success:
-            show_toast("Status Update", "Teleport connected!")
-        else:
-            show_toast("Error", act_msg)
+        if not act_success:
+            logger.error("Activate after refresh failed: %s", act_msg)
         return act_success, act_msg
 
     logger.error(
         "Error While Refreshing Configuration for a New Connection", exc_info=True
     )
-    show_toast("Error", f"Refresh failed: {msg}")
     return success, msg
 
 
@@ -1169,21 +1137,17 @@ def on_connect():
             return show_pin_dialog(and_activate=True, parent=parent)
         except Exception:
             logger.error("Error While Creating a New Connection", exc_info=True)
-            show_toast("Error", "Error Creating New Connection")
             return False, "Error Creating New Connection"
     return on_refresh_config()
 
 
 def on_disconnect():
     if not is_tunnel_active():
-        show_toast("Error", "No Teleport Tunnel is active")
         return False, "No Teleport Tunnel is active"
 
     success, msg = deactivate_tunnel()
-    if success:
-        show_toast("Status Update", "Teleport disconnected!")
-    else:
-        show_toast("Error", msg)
+    if not success:
+        logger.error("Disconnect failed: %s", msg)
     return success, msg
 
 
@@ -1196,10 +1160,8 @@ def on_delete_config(parent=None):
             for path in (TOKEN_FILE, UUID_FILE, CONFIG_PATH):
                 if os.path.exists(path):
                     os.remove(path)
-            show_toast("Config Update", "Existing configuration deleted!")
             return True, "Configuration Deleted"
         except Exception as e:
             logger.error("Error While Deleting Existing Configuration", exc_info=True)
-            show_toast("Error", f"Deletion failed: {str(e)}")
             return False, "Error while deleting configuration"
     return False, "Deletion cancelled"
