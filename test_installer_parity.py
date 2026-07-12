@@ -58,6 +58,23 @@ class MacInstallerParityTests(unittest.TestCase):
         self.assertIn("productbuild", script)
         self.assertIn("hdiutil", script)
         self.assertIn("postinstall", script)
+        self.assertIn('VERSION="$(tr -d', script)
+
+    def test_version_is_centralized(self):
+        version_path = os.path.join(ROOT, "VERSION")
+        self.assertTrue(os.path.exists(version_path), "VERSION file missing")
+        with open(version_path, encoding="utf-8") as handle:
+            version = handle.read().strip()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+")
+
+        from config import APP_VERSION
+
+        self.assertEqual(APP_VERSION, version)
+
+        iss = self._read("app_installer_script.iss")
+        self.assertIn('#include "version.iss"', iss)
+        version_iss = self._read("version.iss")
+        self.assertIn(f'#define MyAppVersion "{version}"', version_iss)
 
 
 if __name__ == "__main__":

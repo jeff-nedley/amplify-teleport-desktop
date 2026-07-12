@@ -7,6 +7,26 @@ from platform_utils import get_config_dir, get_icon_path, resource_path
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def _load_app_version() -> str:
+    """Read the release version from the repo/bundle VERSION file."""
+    candidates = (
+        resource_path("VERSION"),
+        os.path.join(APP_DIR, "VERSION"),
+    )
+    for path in candidates:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                value = handle.read().strip()
+            if value:
+                return value
+        except OSError:
+            continue
+    return "0.0.0"
+
+
+APP_VERSION = _load_app_version()
+
 # Config paths (APPDATA on Windows, Application Support on macOS)
 CONFIG_DIR = get_config_dir()
 os.makedirs(CONFIG_DIR, exist_ok=True)
