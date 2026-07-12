@@ -6,6 +6,10 @@
 # Mirrors CurUninstallStepChanged in app_installer_script.iss:
 #   - Removes the application
 #   - If WireGuard is installed, asks whether to uninstall it too
+#
+# Installed as:
+#   /Applications/Uninstall AmpliFi Teleport.app
+# (legacy .command copies are also cleaned up if present)
 
 set -euo pipefail
 
@@ -14,7 +18,8 @@ APP_PATH="/Applications/${APP_NAME}.app"
 SUPPORT_USER="${HOME}/Library/Application Support/AmpliFiTeleport"
 SUPPORT_SYSTEM="/Library/Application Support/AmpliFiTeleport"
 LOG_DIR="/Library/Logs/AmpliFiTeleport"
-UNINSTALLER_PATH="/Applications/Uninstall AmpliFi Teleport.command"
+UNINSTALLER_APP="/Applications/Uninstall AmpliFi Teleport.app"
+UNINSTALLER_COMMAND="/Applications/Uninstall AmpliFi Teleport.command"
 
 osascript_dialog() {
     local message="$1"
@@ -64,10 +69,11 @@ if [[ "$CHOICE" != "Uninstall" ]]; then
     exit 0
 fi
 
-# Quit running app if present
+# Quit running app / helper if present
 osascript -e "tell application \"${APP_NAME}\" to quit" >/dev/null 2>&1 || true
 sleep 1
 pkill -f "${APP_NAME}" >/dev/null 2>&1 || true
+pkill -f "menubar-helper" >/dev/null 2>&1 || true
 
 # Remove application bundle
 if [[ -d "$APP_PATH" ]]; then
@@ -120,18 +126,26 @@ rm -f /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper 2>/dev/null || t
 rm -f /etc/sudoers.d/amplifi-teleport 2>/dev/null || true
 
 # If helper/sudoers remain (permission denied), ask for admin once to finish cleanup
-if [[ -e /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper || -e /etc/sudoers.d/amplifi-teleport ]]; then
+if [[ -e /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper || -e /etc/sudoers.d/amplifi-teleport || -d "$SUPPORT_SYSTEM" || -d "$LOG_DIR" ]]; then
     osascript <<'EOF' >/dev/null 2>&1 || true
 do shell script "rm -f /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper /etc/sudoers.d/amplifi-teleport; rm -rf '/Library/Application Support/AmpliFiTeleport' /Library/Logs/AmpliFiTeleport" with administrator privileges
 EOF
 fi
 
-# Remove this uninstaller last
 osascript_dialog \
     "AmpliFi Teleport for Desktop has been uninstalled." \
     "\"OK\"" \
     1 \
     "note" >/dev/null || true
 
-rm -f "$UNINSTALLER_PATH" 2>/dev/null || true
+# Remove uninstallers last (app bundle + any legacy .command)
+rm -rf "$UNINSTALLER_APP" 2>/dev/null || true
+rm -f "$UNINSTALLER_COMMAND" 2>/dev/null || true
+# If this script is running from inside the .app, try to remove the bundle after exit
+if [[ "${0}" == *"/Uninstall AmpliFi Teleport.app/"* ]]; then
+    (
+        sleep 1
+        rm -rf "$UNINSTALLER_APP" 2>/dev/null || true
+    ) &
+fi
 exit 0

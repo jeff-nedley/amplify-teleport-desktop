@@ -44,6 +44,13 @@ class MacInstallerParityTests(unittest.TestCase):
         )
         self.assertIn("Do you also want to uninstall WireGuard?", uninstall)
         self.assertIn("is_wireguard_installed", uninstall)
+        self.assertIn("Uninstall AmpliFi Teleport.app", uninstall)
+
+    def test_dmg_stages_uninstaller_app(self):
+        script = self._read("build_macos_dmg.sh")
+        self.assertIn("stage_uninstaller_app", script)
+        self.assertIn("Uninstall AmpliFi Teleport.app", script)
+        self.assertIn("CFBundleDisplayName", script)
 
     def test_inno_still_has_wireguard_silent_install(self):
         iss = self._read("app_installer_script.iss")

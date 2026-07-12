@@ -65,6 +65,7 @@ DMG_ROOT="${BUILD_DIR}/dmg_root"
 SCRIPTS_DIR="${ROOT}/macos/installer/scripts"
 RESOURCES_DIR="${ROOT}/macos/installer/resources"
 UNINSTALLER_SRC="${ROOT}/macos/uninstaller/Uninstall AmpliFi Teleport.command"
+UNINSTALLER_APP_NAME="Uninstall AmpliFi Teleport.app"
 
 log() { echo "[build_macos_dmg] $*"; }
 
@@ -100,6 +101,57 @@ build_app() {
     fi
 }
 
+stage_uninstaller_app() {
+    # Spotlight / Launchpad index .app bundles, not bare .command scripts.
+    local dest="$1"
+    local macos_dir="${dest}/Contents/MacOS"
+    local resources_dir="${dest}/Contents/Resources"
+    local version
+    version="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
+
+    rm -rf "$dest"
+    mkdir -p "$macos_dir" "$resources_dir"
+
+    cp "$UNINSTALLER_SRC" "${macos_dir}/uninstall"
+    chmod 755 "${macos_dir}/uninstall"
+
+    if [[ -f "${ROOT}/tray-icon.png" ]]; then
+        # Best-effort icon; Launch Services still indexes the app without it.
+        cp "${ROOT}/tray-icon.png" "${resources_dir}/AppIcon.png"
+    fi
+
+    cat > "${dest}/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Uninstall AmpliFi Teleport</string>
+    <key>CFBundleExecutable</key>
+    <string>uninstall</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.jeffnedley.amplifiteleport.uninstall</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Uninstall AmpliFi Teleport</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${version}</string>
+    <key>CFBundleVersion</key>
+    <string>${version}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+EOF
+}
+
 stage_payload() {
     log "Staging install payload (Applications)..."
     rm -rf "$PAYLOAD_DIR"
@@ -108,9 +160,9 @@ stage_payload() {
     # App bundle
     ditto "${DIST_DIR}/${APP_BUNDLE}" "${PAYLOAD_DIR}/Applications/${APP_BUNDLE}"
 
-    # Uninstaller (macOS equivalent of Add/Remove Programs entry)
-    cp "$UNINSTALLER_SRC" "${PAYLOAD_DIR}/Applications/Uninstall AmpliFi Teleport.command"
-    chmod 755 "${PAYLOAD_DIR}/Applications/Uninstall AmpliFi Teleport.command"
+    # Uninstaller as a real .app so Spotlight / Launchpad can find it
+    log "Staging ${UNINSTALLER_APP_NAME}"
+    stage_uninstaller_app "${PAYLOAD_DIR}/Applications/${UNINSTALLER_APP_NAME}"
 
     # Privilege helper scripts (installed by postinstall with sudoers)
     mkdir -p "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged"
@@ -122,7 +174,7 @@ stage_payload() {
         "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged/wg-helper.sh" \
         "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/privileged/install_privileges.sh"
 
-    # Also keep a copy of the uninstaller under Application Support
+    # Keep a script copy under Application Support for recovery / docs
     cp "$UNINSTALLER_SRC" \
         "${PAYLOAD_DIR}/Library/Application Support/AmpliFiTeleport/Uninstall AmpliFi Teleport.command"
     chmod 755 \

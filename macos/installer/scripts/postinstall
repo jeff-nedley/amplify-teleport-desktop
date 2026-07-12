@@ -191,9 +191,14 @@ USER_NAME="$(console_user || true)"
 log "Console user: ${USER_NAME:-unknown}"
 
 # Ensure Applications uninstaller is executable (payload may preserve mode)
-if [[ -f "/Applications/Uninstall AmpliFi Teleport.command" ]]; then
-    chmod 755 "/Applications/Uninstall AmpliFi Teleport.command" || true
+if [[ -d "/Applications/Uninstall AmpliFi Teleport.app" ]]; then
+    chmod 755 "/Applications/Uninstall AmpliFi Teleport.app/Contents/MacOS/uninstall" 2>/dev/null || true
+    # Nudge Launch Services so Spotlight can find the new uninstaller app.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -f "/Applications/Uninstall AmpliFi Teleport.app" >/dev/null 2>&1 || true
 fi
+# Clean up any legacy .command uninstaller from older installs
+rm -f "/Applications/Uninstall AmpliFi Teleport.command" 2>/dev/null || true
 
 # Install passwordless WireGuard helper (one admin prompt at install time — never again in-app)
 PRIV_SRC="/Library/Application Support/AmpliFiTeleport/privileged"

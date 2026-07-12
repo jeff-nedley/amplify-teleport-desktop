@@ -41,7 +41,7 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 3. If WireGuard is not already installed, Setup installs it silently
 4. The app launches when installation finishes
 
-**Uninstall:** use system uninstall on Windows, or **Uninstall AmpliFi Teleport** in Applications on macOS. You will be asked whether to remove WireGuard as well.
+**Uninstall:** use Apps & features on Windows, or **Uninstall AmpliFi Teleport** in Applications on macOS (Spotlight-searchable app). You will be asked whether to remove WireGuard as well.
 
 ## How to Use
 
