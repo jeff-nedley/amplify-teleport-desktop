@@ -196,12 +196,87 @@ class ActivateDeactivateFunctionalTests(unittest.TestCase):
                     _completed(0),  # uninstall
                     _completed(0),  # install
                 ],
+            ), mock.patch.object(
+                tunnel, "_wait_windows_tunnel_running", return_value=True
             ):
                 ok, msg = tunnel.activate_tunnel()
 
             self.assertTrue(ok)
             self.assertIn("activated", msg.lower())
             self.assertTrue(os.path.exists(env.paths["TUNNEL_ACTIVE_MARKER"]))
+
+    def test_activate_windows_fails_if_service_never_runs(self):
+        import tunnel
+
+        with TempTunnelPaths(tunnel) as env:
+            with open(env.paths["CONFIG_PATH"], "w", encoding="utf-8") as handle:
+                handle.write(SAMPLE_WG_CONFIG)
+
+            with mock.patch.object(
+                tunnel, "ensure_wireguard_available", return_value=(True, "")
+            ), mock.patch.object(
+                tunnel, "IS_WINDOWS", True
+            ), mock.patch.object(
+                tunnel, "IS_MACOS", False
+            ), mock.patch.object(
+                tunnel, "find_wireguard_exe", return_value="C:\\WireGuard\\wireguard.exe"
+            ), mock.patch.object(
+                tunnel,
+                "run_hidden",
+                side_effect=[_completed(0), _completed(0)],
+            ), mock.patch.object(
+                tunnel, "_wait_windows_tunnel_running", return_value=False
+            ), mock.patch.object(
+                tunnel, "_windows_service_state", return_value="START_PENDING"
+            ):
+                ok, msg = tunnel.activate_tunnel()
+
+            self.assertFalse(ok)
+            self.assertIn("did not start", msg.lower())
+            self.assertFalse(os.path.exists(env.paths["TUNNEL_ACTIVE_MARKER"]))
+
+    def test_windows_service_state_parses_running_not_pending(self):
+        import tunnel
+
+        pending = _completed(
+            0,
+            stdout=(
+                "SERVICE_NAME: WireGuardTunnel$teleport\n"
+                "        STATE              : 2  START_PENDING\n"
+                "                                (NOT_STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)\n"
+            ),
+        )
+        running = _completed(
+            0,
+            stdout=(
+                "SERVICE_NAME: WireGuardTunnel$teleport\n"
+                "        STATE              : 4  RUNNING\n"
+                "                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n"
+            ),
+        )
+        missing = _completed(1060, stdout="The specified service does not exist.\n")
+
+        with mock.patch.object(tunnel, "run_hidden", return_value=pending):
+            self.assertEqual(tunnel._windows_service_state(), "START_PENDING")
+            self.assertFalse(tunnel._is_active_windows())
+
+        with mock.patch.object(tunnel, "run_hidden", return_value=running):
+            self.assertEqual(tunnel._windows_service_state(), "RUNNING")
+            self.assertTrue(tunnel._is_active_windows())
+
+        with mock.patch.object(tunnel, "run_hidden", return_value=missing):
+            self.assertIsNone(tunnel._windows_service_state())
+            self.assertFalse(tunnel._is_active_windows())
+
+    def test_wait_windows_tunnel_running_passes_start_pending(self):
+        import tunnel
+
+        states = ["START_PENDING", "START_PENDING", "RUNNING"]
+
+        with mock.patch.object(
+            tunnel, "_windows_service_state", side_effect=states
+        ), mock.patch.object(tunnel.time, "sleep"):
+            self.assertTrue(tunnel._wait_windows_tunnel_running(timeout=5, poll_interval=0))
 
     def test_activate_without_config_fails(self):
         import tunnel

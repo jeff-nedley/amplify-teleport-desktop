@@ -41,7 +41,7 @@ function Get-AppVersion {
 
 function Sync-VersionIss([string]$Version) {
     @(
-        "; Generated from VERSION — do not edit by hand."
+        "; Generated from VERSION - do not edit by hand."
         "#define MyAppVersion `"$Version`""
     ) | Set-Content -Path (Join-Path $Root "version.iss") -Encoding ascii
     Write-Host "Synced version.iss -> $Version"
@@ -67,34 +67,42 @@ function Find-ISCC {
     return $null
 }
 
-function Invoke-UnitTests {
-    Write-Step "Running unit tests"
-    $env:QT_QPA_PLATFORM = if ($env:QT_QPA_PLATFORM) { $env:QT_QPA_PLATFORM } else { "offscreen" }
-
-    $python = $null
+function Find-ProjectPython {
+    $venvPython = Join-Path $Root ".venv\Scripts\python.exe"
+    if (Test-Path $venvPython) {
+        return $venvPython
+    }
     foreach ($candidate in @("python", "python3")) {
         $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
         if ($cmd) {
-            $python = $cmd.Source
-            break
+            return $cmd.Source
         }
     }
-    if (-not $python) {
-        throw "python/python3 not found on PATH. Activate your venv first."
-    }
+    return $null
+}
 
-    & $python -m unittest test_platform test_installer_parity test_tunnel_functional test_ui_functional -v
+function Invoke-UnitTests([string]$Python) {
+    Write-Step "Running unit tests"
+    $env:QT_QPA_PLATFORM = if ($env:QT_QPA_PLATFORM) { $env:QT_QPA_PLATFORM } else { "offscreen" }
+
+    & $Python -m unittest test_platform test_installer_parity test_tunnel_functional test_ui_functional -v
     if ($LASTEXITCODE -ne 0) {
         throw "Unit tests failed (exit code $LASTEXITCODE). Fix tests before packaging."
     }
 }
+
+$python = Find-ProjectPython
+if (-not $python) {
+    throw "python not found. Create/activate .venv first: python -m venv .venv && .\.venv\Scripts\Activate.ps1 && pip install -r requirements.txt"
+}
+Write-Host "Using Python: $python"
 
 $version = Get-AppVersion
 Write-Step "AmpliFi Teleport Windows release ($version)"
 Sync-VersionIss $version
 
 if (-not $SkipTests) {
-    Invoke-UnitTests
+    Invoke-UnitTests $python
 } else {
     Write-Step "Skipping unit tests (-SkipTests)"
 }
@@ -105,7 +113,7 @@ if (-not $SkipClean) {
 }
 
 Write-Step "Building application with PyInstaller"
-pyinstaller --onefile --windowed `
+& $python -m PyInstaller --onefile --windowed `
   --name "AmpliFi Teleport for Desktop" `
   --icon tray-icon.ico `
   --add-data "tray-icon.ico;." `
@@ -122,6 +130,9 @@ pyinstaller --onefile --windowed `
   --hidden-import PySide6.QtWidgets `
   --collect-all PySide6 `
   main.py
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed with exit code $LASTEXITCODE"
+}
 
 $exePath = Join-Path $Root "dist\AmpliFi Teleport for Desktop.exe"
 if (-not (Test-Path $exePath)) {

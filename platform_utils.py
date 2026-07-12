@@ -291,6 +291,20 @@ def install_macos_privileges(force: bool = False) -> tuple[bool, str]:
     )
 
 
+def _windows_elevated_launch_params() -> tuple[str, str | None]:
+    """
+    Build ShellExecuteW lpParameters + lpDirectory for a UAC re-launch.
+
+    Frozen builds: sys.executable is the app binary; only pass extra argv.
+    From source: must pass the script path or elevated python.exe opens a bare REPL.
+    """
+    if getattr(sys, "frozen", False):
+        return subprocess.list2cmdline(sys.argv[1:]), None
+    script = os.path.abspath(sys.argv[0])
+    params = subprocess.list2cmdline([script, *sys.argv[1:]])
+    return params, os.path.dirname(script) or None
+
+
 def run_elevated_startup() -> None:
     """
     Ensure privileges needed for tunnel management.
@@ -302,9 +316,9 @@ def run_elevated_startup() -> None:
             return
         import ctypes
 
-        params = subprocess.list2cmdline(sys.argv[1:])
+        params, cwd = _windows_elevated_launch_params()
         ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, params, None, 1
+            None, "runas", sys.executable, params, cwd, 1
         )
         sys.exit(0)
 

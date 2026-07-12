@@ -220,6 +220,34 @@ QLineEdit:focus {{
 }}
 QMessageBox {{
     background-color: {COLORS["bg_bottom"]};
+    color: {COLORS["ink"]};
+}}
+QMessageBox QLabel {{
+    color: {COLORS["ink"]};
+    background: transparent;
+}}
+QMessageBox QPushButton {{
+    background-color: {COLORS["field"]};
+    color: {COLORS["ink"]};
+    border: 1px solid {COLORS["field_border"]};
+    border-radius: 10px;
+    padding: 8px 18px;
+    min-width: 80px;
+    min-height: 18px;
+    font-size: 13px;
+    font-weight: 600;
+}}
+QMessageBox QPushButton:hover {{
+    background-color: {COLORS["accent_soft"]};
+    border-color: {COLORS["accent"]};
+    color: {COLORS["accent_hover"]};
+}}
+QMessageBox QPushButton:focus {{
+    border: 1px solid {COLORS["accent"]};
+    outline: none;
+}}
+QMessageBox QPushButton:pressed {{
+    background-color: {COLORS["line"]};
 }}
 """
 
@@ -1091,6 +1119,15 @@ def confirm_delete(parent=None) -> bool:
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
     )
     box.setDefaultButton(QMessageBox.StandardButton.No)
+    # App stylesheet disables native button chrome; force a polish pass so our
+    # QMessageBox QPushButton rules paint text/border on Windows.
+    for role in (QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No):
+        button = box.button(role)
+        if button is not None:
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
     return box.exec() == QMessageBox.StandardButton.Yes
 
 

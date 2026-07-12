@@ -94,6 +94,29 @@ class MenuBarHelperLaunchTests(unittest.TestCase):
         self.assertEqual(cmd[:3], [sys.executable, "-u", "/tmp/macos_menubar_helper.py"])
 
 
+class WindowsElevatedLaunchParamsTests(unittest.TestCase):
+    def test_source_includes_script_path(self):
+        import platform_utils as pu
+
+        with mock.patch.object(sys, "frozen", False, create=True), mock.patch.object(
+            sys, "argv", ["main.py", "--verbose"]
+        ):
+            params, cwd = pu._windows_elevated_launch_params()
+        self.assertIn("main.py", params)
+        self.assertIn("--verbose", params)
+        self.assertTrue(cwd)
+
+    def test_frozen_omits_binary_from_params(self):
+        import platform_utils as pu
+
+        with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(
+            sys, "argv", [r"C:\Program Files\App\Amplifi.exe", "--verbose"]
+        ):
+            params, cwd = pu._windows_elevated_launch_params()
+        self.assertEqual(params, "--verbose")
+        self.assertIsNone(cwd)
+
+
 if __name__ == "__main__":
     # Run from repo root so icon paths resolve
     os.chdir(os.path.dirname(os.path.abspath(__file__)) or ".")

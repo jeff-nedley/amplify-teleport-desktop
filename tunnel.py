@@ -208,6 +208,50 @@ def _set_active_marker(active: bool) -> None:
 
 # --- Windows (WireGuard tunnel service) -------------------------------------------------
 
+def _windows_service_state() -> str | None:
+    """
+    Return the WireGuardTunnel$teleport SCM state (RUNNING, START_PENDING, …).
+    None when the service is missing or the query fails.
+    """
+    result = run_hidden(
+        ["sc", "query", f"WireGuardTunnel${TUNNEL_NAME}"],
+        timeout=5,
+    )
+    output = result.stdout or ""
+    logger.debug("WireGuard Query output: %s", output)
+    if result.returncode != 0:
+        return None
+    match = re.search(r"STATE\s*:\s*\d+\s+(\w+)", output, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    # Fallback: avoid matching START_PENDING / STOP_PENDING as "running"
+    lowered = output.lower()
+    if re.search(r"\bstate\s*:\s*\d+\s+running\b", lowered):
+        return "RUNNING"
+    return None
+
+
+def _wait_windows_tunnel_running(timeout: float = 15.0, poll_interval: float = 0.4) -> bool:
+    """
+    /installtunnelservice returns before the SCM reaches RUNNING.
+    Poll so Connect does not refresh the UI during START_PENDING.
+    """
+    deadline = time.monotonic() + timeout
+    saw_pending = False
+    while time.monotonic() < deadline:
+        state = _windows_service_state()
+        if state == "RUNNING":
+            return True
+        if state == "START_PENDING":
+            saw_pending = True
+        elif saw_pending and state in (None, "STOPPED"):
+            # Started then died — no point waiting out the full timeout
+            logger.warning("WireGuard tunnel left START_PENDING into %s", state)
+            return False
+        time.sleep(poll_interval)
+    return _windows_service_state() == "RUNNING"
+
+
 def _activate_windows():
     wg_exe = find_wireguard_exe()
     run_hidden([wg_exe, "/uninstalltunnelservice", TUNNEL_NAME])
@@ -216,6 +260,11 @@ def _activate_windows():
         err = (result.stderr or result.stdout or "").strip()
         _set_active_marker(False)
         return False, f"Activation failed: {err or result.returncode}"
+    if not _wait_windows_tunnel_running():
+        state = _windows_service_state()
+        _set_active_marker(False)
+        detail = f"service state={state or 'missing'}"
+        return False, f"Activation failed: WireGuard tunnel did not start ({detail})"
     _set_active_marker(True)
     return True, "Tunnel activated!"
 
@@ -246,16 +295,7 @@ def _deactivate_windows():
 
 
 def _is_active_windows():
-    result = run_hidden(
-        ["sc", "query", f"WireGuardTunnel${TUNNEL_NAME}"],
-        timeout=5,
-    )
-    output = (result.stdout or "").lower()
-    logger.debug("WireGuard Query output: %s", output)
-
-    if result.returncode != 0:
-        return False
-    return "running" in output
+    return _windows_service_state() == "RUNNING"
 
 
 # --- macOS / Unix (wg-quick) ------------------------------------------------------------
