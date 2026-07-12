@@ -187,8 +187,7 @@ async def _connect_device_peer(pc, deviceToken):
 
         logger.debug("Received remote description: %s" % remoteDescription)
 
-        loop = asyncio.get_event_loop()
-        configFuture = loop.create_future()
+        configFuture = asyncio.get_running_loop().create_future()
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
@@ -237,6 +236,24 @@ def get_device_token(clientHint, pin):
 
     return deviceTokenAndSuccess["client_id"]
 
+
+def _ensure_event_loop():
+    """Return an asyncio loop for this thread (creates one for QThread workers)."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            return loop
+    except RuntimeError:
+        pass
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop
+
+
 def connect_device(deviceToken):
     stun = RTCIceServer(urls=ICE_STUN_SERVER)
     config = RTCConfiguration([stun])
@@ -244,7 +261,7 @@ def connect_device(deviceToken):
 
     coro = _connect_device_peer(pc, deviceToken)
 
-    loop = asyncio.get_event_loop()
+    loop = _ensure_event_loop()
     try:
         result = loop.run_until_complete(coro)
         if not result:
