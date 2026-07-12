@@ -12,10 +12,10 @@
 #   amplifi-teleport-wg-helper status      <absolute-path-to-teleport.conf>
 #   amplifi-teleport-wg-helper restore-dns <absolute-path-to-teleport.conf>
 #
-# IMPORTANT (macOS): Do NOT put DNS= in the WireGuard config for wg-quick.
-# wg-quick's background route monitor can call set_dns AFTER del_dns on down,
-# leaving Wi-Fi "connected" with a dead tunnel resolver. We apply/clear DNS
-# ourselves instead.
+# DNS handling:
+#   - Never put DNS= in the WireGuard config (wg-quick's monitor can race on down).
+#   - On up: snapshot each service's DNS, then apply only our tunnel DNS.
+#   - On down: restore the snapshot (not a blanket Empty), so custom DNS is kept.
 
 set -euo pipefail
 
@@ -34,6 +34,9 @@ if [[ "$(basename "$CONFIG")" != "teleport.conf" || "$CONFIG" != *"/AmpliFiTelep
     echo "Refusing config path: $CONFIG" >&2
     exit 3
 fi
+
+DNS_BACKUP="${CONFIG}.dns-backup"
+DNS_SIDECAR="${CONFIG}.dns"
 
 find_tool() {
     local name="$1"
@@ -59,16 +62,103 @@ each_network_service() {
     done
 }
 
-# Reset every network service to DHCP DNS / empty search domains.
-restore_macos_dns() {
-    local service
-    if [[ ! -x /usr/sbin/networksetup ]]; then
+# Encode a value for the backup file (spaces -> unit separator friendly).
+# Format per line: service<TAB>dns|Empty<TAB>search|Empty
+# DNS/search lists use commas between entries.
+read_service_dns() {
+    local service="$1"
+    local raw
+    raw="$(/usr/sbin/networksetup -getdnsservers "$service" 2>/dev/null || true)"
+    if [[ -z "$raw" || "$raw" == *"aren't any DNS Servers"* || "$raw" == *"Error"* ]]; then
+        printf 'Empty'
+    else
+        printf '%s' "$raw" | /usr/bin/tr '\n' ',' | /usr/bin/sed 's/,$//'
+    fi
+}
+
+read_service_search() {
+    local service="$1"
+    local raw
+    raw="$(/usr/sbin/networksetup -getsearchdomains "$service" 2>/dev/null || true)"
+    if [[ -z "$raw" || "$raw" == *"aren't any Search Domains"* || "$raw" == *"Error"* ]]; then
+        printf 'Empty'
+    else
+        printf '%s' "$raw" | /usr/bin/tr '\n' ',' | /usr/bin/sed 's/,$//'
+    fi
+}
+
+set_service_dns() {
+    local service="$1"
+    local dns_csv="$2"
+    local search_csv="$3"
+    local -a dns_args=()
+    local -a search_args=()
+    if [[ -z "$dns_csv" || "$dns_csv" == "Empty" ]]; then
+        /usr/sbin/networksetup -setdnsservers "$service" Empty >/dev/null 2>&1 || true
+    else
+        IFS=',' read -r -a dns_args <<< "$dns_csv"
+        /usr/sbin/networksetup -setdnsservers "$service" "${dns_args[@]}" >/dev/null 2>&1 || true
+    fi
+
+    if [[ -z "$search_csv" || "$search_csv" == "Empty" ]]; then
+        /usr/sbin/networksetup -setsearchdomains "$service" Empty >/dev/null 2>&1 || true
+    else
+        IFS=',' read -r -a search_args <<< "$search_csv"
+        /usr/sbin/networksetup -setsearchdomains "$service" "${search_args[@]}" >/dev/null 2>&1 || true
+    fi
+}
+
+snapshot_dns() {
+    local service dns_csv search_csv
+    : > "$DNS_BACKUP"
+    while IFS= read -r service; do
+        dns_csv="$(read_service_dns "$service")"
+        search_csv="$(read_service_search "$service")"
+        printf '%s\t%s\t%s\n' "$service" "$dns_csv" "$search_csv" >> "$DNS_BACKUP"
+    done < <(each_network_service)
+    echo "snapshotted-dns"
+}
+
+restore_dns_from_backup() {
+    local service dns_csv search_csv
+    if [[ ! -f "$DNS_BACKUP" ]]; then
+        echo "no-dns-backup"
+        return 1
+    fi
+    while IFS=$'\t' read -r service dns_csv search_csv; do
+        [[ -z "$service" ]] && continue
+        set_service_dns "$service" "$dns_csv" "$search_csv"
+    done < "$DNS_BACKUP"
+    echo "restored-dns-from-backup"
+    return 0
+}
+
+# Fallback when no snapshot exists: only clear DNS that still matches our tunnel DNS.
+clear_only_tunnel_dns() {
+    local service current tunnel_csv tunnel_norm current_norm
+    local -a tunnel_args=()
+
+    if [[ -f "$DNS_SIDECAR" ]]; then
+        # shellcheck disable=SC2207
+        tunnel_args=( $(/bin/cat "$DNS_SIDECAR" 2>/dev/null | tr ',;' ' ') )
+    fi
+    if [[ ${#tunnel_args[@]} -eq 0 ]]; then
+        echo "no-tunnel-dns-to-clear"
         return 0
     fi
+
+    tunnel_csv="$(IFS=','; echo "${tunnel_args[*]}")"
+    tunnel_norm="$(printf '%s' "$tunnel_csv" | tr ' ' ',' )"
+
     while IFS= read -r service; do
-        /usr/sbin/networksetup -setdnsservers "$service" Empty >/dev/null 2>&1 || true
-        /usr/sbin/networksetup -setsearchdomains "$service" Empty >/dev/null 2>&1 || true
+        current="$(read_service_dns "$service")"
+        current_norm="$(printf '%s' "$current" | tr ' ' ',')"
+        # Exact match to what we apply on up — leave custom/other DNS alone.
+        if [[ "$current_norm" == "$tunnel_norm" ]]; then
+            set_service_dns "$service" "Empty" "Empty"
+        fi
     done < <(each_network_service)
+    echo "cleared-matching-tunnel-dns"
 }
 
 flush_dns_cache() {
@@ -77,16 +167,15 @@ flush_dns_cache() {
     /usr/bin/killall -HUP mDNSResponderHelper >/dev/null 2>&1 || true
 }
 
-# Apply AmpliFi tunnel DNS to all services (used while the tunnel is up).
 apply_tunnel_dns() {
-    local service dns_line dns_args=()
-    [[ -f "$CONFIG" ]] || return 0
+    local service
+    local -a dns_args=()
 
-    # Prefer explicit sidecar written by the app; fall back to commented marker.
-    if [[ -f "${CONFIG}.dns" ]]; then
+    if [[ -f "$DNS_SIDECAR" ]]; then
         # shellcheck disable=SC2207
-        dns_args=( $(/bin/cat "${CONFIG}.dns" 2>/dev/null | tr ',;' ' ') )
+        dns_args=( $(/bin/cat "$DNS_SIDECAR" 2>/dev/null | tr ',;' ' ') )
     else
+        local dns_line
         dns_line="$(
             /usr/bin/grep -E '^[[:space:]]*#[[:space:]]*AmpliFiTeleportDNS[[:space:]]*=' "$CONFIG" 2>/dev/null \
                 | /usr/bin/tail -n 1 \
@@ -109,23 +198,33 @@ apply_tunnel_dns() {
     echo "applied-dns ${dns_args[*]}"
 }
 
-# Beat the wg-quick monitor race: it can re-apply tunnel DNS via ALRM after down.
-restore_macos_dns_hardened() {
+# Restore carefully, with retries to beat any lingering wg-quick monitor ALRM.
+restore_dns_hardened() {
     local i
-    restore_macos_dns
-    for i in 1 2 3 4 5; do
+    if ! restore_dns_from_backup; then
+        clear_only_tunnel_dns
+    fi
+    for i in 1 2 3 4; do
         /bin/sleep 1
-        restore_macos_dns
+        if [[ -f "$DNS_BACKUP" ]]; then
+            restore_dns_from_backup || true
+        else
+            clear_only_tunnel_dns
+        fi
     done
     flush_dns_cache
-    # One last pass after cache flush
     /bin/sleep 1
-    restore_macos_dns
+    if [[ -f "$DNS_BACKUP" ]]; then
+        restore_dns_from_backup || true
+        /bin/rm -f "$DNS_BACKUP"
+    else
+        clear_only_tunnel_dns
+    fi
     echo "restored-dns-hardened"
 }
 
 if [[ "$ACTION" == "restore-dns" ]]; then
-    restore_macos_dns_hardened
+    restore_dns_hardened
     exit 0
 fi
 
@@ -163,13 +262,13 @@ if [[ "$ACTION" == "down" ]]; then
     "$BASH_BIN" "$WG_QUICK" down "$CONFIG"
     rc=$?
     set -e
-    # Wait for wireguard-go / route monitor to exit, then clear DNS repeatedly.
     /bin/sleep 1
-    restore_macos_dns_hardened
+    restore_dns_hardened
     exit "$rc"
 fi
 
-# up — bring interface up without wg-quick DNS management, then set DNS ourselves.
+# up: snapshot existing DNS first, then bring tunnel up, then apply ours.
+snapshot_dns
 set +e
 "$BASH_BIN" "$WG_QUICK" up "$CONFIG"
 rc=$?
@@ -177,5 +276,9 @@ set -e
 if [[ $rc -eq 0 ]]; then
     apply_tunnel_dns
     flush_dns_cache
+else
+    # Failed up — put DNS back immediately and drop the snapshot.
+    restore_dns_from_backup || true
+    /bin/rm -f "$DNS_BACKUP"
 fi
 exit "$rc"
