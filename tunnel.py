@@ -152,7 +152,7 @@ def activate_tunnel():
         return False, f"Activation failed: {e}"
 
 
-def deactivate_tunnel():
+def deactivate_tunnel(*, for_quit: bool = False):
     """Deactivate the AmpliFi Teleport WireGuard tunnel."""
     ok, msg = ensure_wireguard_available()
     if not ok:
@@ -161,7 +161,7 @@ def deactivate_tunnel():
     try:
         if IS_WINDOWS:
             return _deactivate_windows()
-        return _deactivate_macos()
+        return _deactivate_macos(for_quit=for_quit)
     except Exception as e:
         logger.error("Error While Deactivating Tunnel Connection", exc_info=True)
         return False, f"Deactivation failed: {e}"
@@ -337,7 +337,7 @@ def _migrate_macos_config_dns() -> None:
         logger.debug("Could not migrate macOS WireGuard DNS settings", exc_info=True)
 
 
-def _deactivate_macos():
+def _deactivate_macos(for_quit: bool = False):
     if not macos_helper_ready():
         return False, (
             "Administrator privileges are not set up for WireGuard. "
@@ -346,18 +346,21 @@ def _deactivate_macos():
 
     _migrate_macos_config_dns()
 
-    result = run_macos_wg_helper("down", CONFIG_PATH, timeout=90)
+    # Quit uses a tighter budget — helper `down` already restores DNS.
+    helper_timeout = 20 if for_quit else 90
+    result = run_macos_wg_helper("down", CONFIG_PATH, timeout=helper_timeout)
 
-    # Hardened DNS restore (also runs inside helper; repeat here for safety).
-    try:
-        dns = run_macos_wg_helper("restore-dns", CONFIG_PATH, timeout=45)
-        logger.info(
-            "DNS restore after disconnect: rc=%s out=%s",
-            dns.returncode,
-            (dns.stdout or "").strip(),
-        )
-    except Exception:
-        logger.exception("DNS restore after disconnect failed")
+    if not for_quit:
+        # Hardened DNS restore (also runs inside helper; repeat here for safety).
+        try:
+            dns = run_macos_wg_helper("restore-dns", CONFIG_PATH, timeout=45)
+            logger.info(
+                "DNS restore after disconnect: rc=%s out=%s",
+                dns.returncode,
+                (dns.stdout or "").strip(),
+            )
+        except Exception:
+            logger.exception("DNS restore after disconnect failed")
 
     if result.returncode != 0:
         err = f"{result.stderr or ''}{result.stdout or ''}".strip().lower()
@@ -374,8 +377,8 @@ def _deactivate_macos():
             return False, "Tunnel not active."
         return False, f"Deactivation failed: {(result.stderr or result.stdout or '').strip()}"
 
-    max_wait = 8.0
-    poll_interval = 0.8
+    max_wait = 2.0 if for_quit else 8.0
+    poll_interval = 0.4 if for_quit else 0.8
     elapsed = 0.0
     while elapsed < max_wait:
         _set_active_marker(False)

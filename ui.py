@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -782,12 +783,30 @@ class ControlWindow(QMainWindow):
         )
 
     def _on_quit(self):
-        if self._busy:
+        if getattr(self, "_quitting", False):
             return
+        self._quitting = True
+        self._busy = True
+
+        # Instant perceived exit: dismiss UI / menu bar before cleanup finishes.
+        try:
+            self.hide()
+        except Exception:
+            pass
+        if IS_MACOS:
+            try:
+                from macos_tray import hide_dock_icon
+
+                hide_dock_icon()
+            except Exception:
+                pass
+        _stop_tray()
 
         def work():
             try:
-                return deactivate_tunnel()
+                if is_tunnel_active(retries=1, delay=0):
+                    return deactivate_tunnel(for_quit=True)
+                return True, "No active tunnel"
             except Exception as e:
                 logger.exception("Error while disconnecting tunnel during quit")
                 return False, str(e)
@@ -795,12 +814,18 @@ class ControlWindow(QMainWindow):
         def after(_ok, _msg):
             quit_application(skip_deactivate=True)
 
-        self._run_in_background(
-            "Disconnecting",
-            work,
-            show_error_toast=False,
-            on_finished=after,
-        )
+        # Prefer a plain worker so we do not rebuild the busy UI on a hidden window.
+        if self._worker is not None and self._worker.isRunning():
+            # Another op is in flight — force-exit after a short grace period.
+            QTimer.singleShot(2500, lambda: quit_application(skip_deactivate=True))
+            return
+
+        worker = TunnelWorker(work, self)
+        self._worker = worker
+        worker.finished_with_result.connect(after)
+        worker.start()
+        # Hard ceiling so quit never hangs if WireGuard teardown stalls.
+        QTimer.singleShot(10000, lambda: quit_application(skip_deactivate=True))
 
 
 def create_qt_tray(window: ControlWindow) -> QSystemTrayIcon:
@@ -958,29 +983,62 @@ def show_control_window():
     window.show_and_raise()
 
 
-def quit_application(skip_deactivate: bool = False):
-    """Fully exit: tear down any active tunnel first (Windows + macOS), then quit."""
-    if not skip_deactivate:
-        try:
-            logger.info("Quit requested — disconnecting tunnel if active")
-            success, msg = deactivate_tunnel()
-            logger.info("Disconnect on quit: success=%s (%s)", success, msg)
-        except Exception:
-            logger.exception("Error while disconnecting tunnel during quit")
-
+def _stop_tray():
     tray = _app_state.get("tray")
-    if tray is not None:
+    if tray is None:
+        return
+    try:
+        if hasattr(tray, "stop"):
+            tray.stop()
+        elif hasattr(tray, "hide"):
+            tray.hide()
+    except Exception:
+        logger.exception("Failed to tear down tray / menu bar helper")
+    _app_state["tray"] = None
+
+
+def quit_application(skip_deactivate: bool = False):
+    """Exit quickly: tear down UI first, disconnect tunnel without blocking the user."""
+    if _app_state.get("exiting"):
+        os._exit(0)
+        return
+    _app_state["exiting"] = True
+
+    window = _app_state.get("window")
+    if window is not None:
         try:
-            if hasattr(tray, "stop"):
-                tray.stop()
-            elif hasattr(tray, "hide"):
-                tray.hide()
+            window.hide()
         except Exception:
-            logger.exception("Failed to tear down tray / menu bar helper")
+            pass
+
+    _stop_tray()
+
+    if not skip_deactivate:
+        # Rare sync callers (tests / fallbacks): keep cleanup off the UI feel path.
+        def _cleanup_then_exit():
+            try:
+                logger.info("Quit requested — disconnecting tunnel if active")
+                if is_tunnel_active(retries=1, delay=0):
+                    success, msg = deactivate_tunnel(for_quit=True)
+                    logger.info("Disconnect on quit: success=%s (%s)", success, msg)
+            except Exception:
+                logger.exception("Error while disconnecting tunnel during quit")
+            finally:
+                os._exit(0)
+
+        threading.Thread(
+            target=_cleanup_then_exit, name="quit-cleanup", daemon=True
+        ).start()
+        app = _app_state.get("app") or QApplication.instance()
+        if app is not None:
+            app.quit()
+        threading.Timer(10.0, lambda: os._exit(0)).start()
+        return
+
     app = _app_state.get("app") or QApplication.instance()
     if app is not None:
         app.quit()
-    QTimer.singleShot(200, lambda: os._exit(0))
+    threading.Timer(0.25, lambda: os._exit(0)).start()
 
 
 def ask_pin(parent=None) -> str | None:
