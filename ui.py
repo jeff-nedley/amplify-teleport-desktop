@@ -726,7 +726,7 @@ class ControlWindow(QMainWindow):
                 return activate_tunnel()
 
             self._run_in_background(
-                "Connecting…",
+                "Connecting",
                 work,
                 success_toast=("Status Update", "Teleport connected!"),
             )
@@ -739,7 +739,7 @@ class ControlWindow(QMainWindow):
             return activate_tunnel()
 
         self._run_in_background(
-            "Connecting…",
+            "Connecting",
             work,
             success_toast=("Status Update", "Teleport connected!"),
         )
@@ -753,7 +753,7 @@ class ControlWindow(QMainWindow):
             return
 
         self._run_in_background(
-            "Disconnecting…",
+            "Disconnecting",
             deactivate_tunnel,
             success_toast=("Status Update", "Teleport disconnected!"),
         )
@@ -776,7 +776,7 @@ class ControlWindow(QMainWindow):
             return True, "Configuration Deleted"
 
         self._run_in_background(
-            "Deleting configuration…",
+            "Deleting Configuration",
             work,
             success_toast=("Config Update", "Existing configuration deleted!"),
         )
@@ -796,7 +796,7 @@ class ControlWindow(QMainWindow):
             quit_application(skip_deactivate=True)
 
         self._run_in_background(
-            "Disconnecting…",
+            "Disconnecting",
             work,
             show_error_toast=False,
             on_finished=after,
