@@ -241,9 +241,32 @@ def _ui_font(size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
 class AtmosphereWidget(QWidget):
     """Soft cool gradient shell — brand atmosphere without flat fill."""
 
+    def __init__(self, parent=None, *, mode: str = "full"):
+        super().__init__(parent)
+        self._mode = mode  # "full" | "hero" | "panel"
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if self._mode == "panel":
+            painter.fillRect(self.rect(), QColor(COLORS["bg_bottom"]))
+            return
+
+        if self._mode == "hero":
+            gradient = QLinearGradient(0, 0, 0, self.height())
+            gradient.setColorAt(0.0, QColor(COLORS["bg_top"]))
+            gradient.setColorAt(0.55, QColor("#E7F1F8"))
+            gradient.setColorAt(1.0, QColor("#DCEAF4"))
+            painter.fillRect(self.rect(), gradient)
+
+            band = QLinearGradient(0, 0, self.width(), 0)
+            band.setColorAt(0.0, QColor(14, 142, 200, 0))
+            band.setColorAt(0.5, QColor(14, 142, 200, 36))
+            band.setColorAt(1.0, QColor(14, 142, 200, 0))
+            painter.fillRect(self.rect(), band)
+            return
+
         gradient = QLinearGradient(0, 0, 0, self.height())
         gradient.setColorAt(0.0, QColor(COLORS["bg_top"]))
         gradient.setColorAt(0.45, QColor("#F1F6FA"))
@@ -462,33 +485,48 @@ class ControlWindow(QMainWindow):
         self.setFixedSize(400, 520)
         self.setWindowIcon(_app_icon())
 
-        shell = AtmosphereWidget()
+        shell = QWidget()
+        shell.setObjectName("central")
         self.setCentralWidget(shell)
 
         root = QVBoxLayout(shell)
-        root.setContentsMargins(28, 32, 28, 20)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Brand block — logo is the hero signal
+        # Top hero band — logo lives entirely inside this section
+        hero = AtmosphereWidget(mode="hero")
+        hero.setFixedHeight(168)
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(28, 0, 28, 0)
+        hero_layout.setSpacing(0)
+        hero_layout.addStretch(1)
+
         self.logo_label = QLabel()
         self.logo_label.setPixmap(_logo_pixmap(96))
         self.logo_label.setFixedHeight(104)
         self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(self.logo_label)
-        root.addSpacing(14)
+        hero_layout.addWidget(self.logo_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        hero_layout.addStretch(1)
+        root.addWidget(hero)
+
+        # Lower content panel
+        panel = AtmosphereWidget(mode="panel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(28, 22, 28, 20)
+        panel_layout.setSpacing(0)
 
         brand = QLabel("AmpliFi Teleport")
         brand.setObjectName("brandTitle")
         brand.setFont(_ui_font(26, QFont.Weight.Bold))
         brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(brand)
+        panel_layout.addWidget(brand)
 
         subtitle = QLabel("Secure home network access")
         subtitle.setObjectName("brandSubtitle")
         subtitle.setFont(_ui_font(13, QFont.Weight.Medium))
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(subtitle)
-        root.addSpacing(22)
+        panel_layout.addWidget(subtitle)
+        panel_layout.addSpacing(22)
 
         # Status row
         status_row = QHBoxLayout()
@@ -502,8 +540,8 @@ class ControlWindow(QMainWindow):
         status_row.addWidget(self.status_dot)
         status_row.addWidget(self.status_label)
         status_row.addStretch(1)
-        root.addLayout(status_row)
-        root.addSpacing(22)
+        panel_layout.addLayout(status_row)
+        panel_layout.addSpacing(22)
 
         # Actions
         self.actions_host = QWidget()
@@ -513,13 +551,15 @@ class ControlWindow(QMainWindow):
         self.body_layout = QVBoxLayout(self.actions_host)
         self.body_layout.setContentsMargins(0, 0, 0, 0)
         self.body_layout.setSpacing(16)
-        root.addWidget(self.actions_host, stretch=1)
+        panel_layout.addWidget(self.actions_host, stretch=1)
 
-        root.addSpacing(8)
+        panel_layout.addSpacing(8)
         version = QLabel(f"Version {APP_VERSION}")
         version.setObjectName("versionLabel")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(version)
+        panel_layout.addWidget(version)
+
+        root.addWidget(panel, stretch=1)
 
         self._busy = False
         self._worker: TunnelWorker | None = None
