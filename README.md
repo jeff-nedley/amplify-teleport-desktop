@@ -63,7 +63,7 @@ The app requests Administrator rights at startup (required for the WireGuard tun
 
 macOS may prompt for an administrator password **once** (at Setup install, or the first time you run from source). After that, Connect / Disconnect should not ask again.
 
-When running from source, Notification Center may show the Python icon (macOS attributes banners to the delivering process). The DMG-installed `.app` shows the AmpliFi Teleport icon.
+When running from source, Dock and Notification Center may show the Python icon (macOS attributes those to the delivering process). The DMG-installed `.app` shows the AmpliFi Teleport icon.
 
 From source on macOS, make sure Cocoa bindings are installed:
 

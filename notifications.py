@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import uuid
 
 from config import ICON_PATH, ICON_PATH_ICO, ICON_PATH_PNG
@@ -23,7 +22,7 @@ def show_toast(title, message, icon_path=None):
     """Show a native notification on Windows (toast) and macOS (Notification Center)."""
     try:
         if IS_MACOS:
-            _notify_macos(title, message, icon_path=icon_path)
+            _notify_macos(title, message)
             return
 
         if icon_path is None:
@@ -55,39 +54,13 @@ def show_toast(title, message, icon_path=None):
         )
 
 
-def _macos_icon_path(icon_path=None) -> str | None:
-    for candidate in (
-        icon_path,
-        ICON_PATH_PNG,
-        ICON_PATH_ICO,
-        ICON_PATH,
-    ):
-        if candidate and os.path.exists(candidate):
-            return os.path.abspath(candidate)
-    return None
-
-
-def _notify_macos(title, message, icon_path=None):
+def _notify_macos(title, message):
     """
     Post from this process (not osascript).
 
-    Notification Center always uses the *delivering app's* bundle icon on the
-    left — no second content/attachment image, so only one icon appears.
-    From source that is Python; from the DMG/.app it is AmpliFi Teleport.
+    Notification Center uses the delivering app's bundle icon. From source
+    that is Python; from the DMG/.app it is AmpliFi Teleport.
     """
-    path = _macos_icon_path(icon_path)
-
-    # When packaged, keep the Dock/app icon aligned with the bundle artwork.
-    if getattr(sys, "frozen", False):
-        try:
-            from macos_tray import set_dock_icon
-
-            set_dock_icon(path)
-        except Exception:
-            logger.debug(
-                "Could not refresh app icon before notification", exc_info=True
-            )
-
     if _notify_macos_user_notifications(title, message):
         return
     if _notify_macos_nsusernotification(title, message):

@@ -183,13 +183,6 @@ def ensure_app() -> QApplication:
         app.setStyleSheet(APP_STYLESHEET)
         # Prefer a cross-platform font that Qt maps well on Win/Mac
         app.setFont(QFont("Segoe UI" if IS_WINDOWS else "Helvetica Neue", 13))
-        if IS_MACOS:
-            try:
-                from macos_tray import set_dock_icon
-
-                set_dock_icon(ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None)
-            except Exception:
-                logger.exception("Failed to set macOS Dock icon at startup")
     _app_state["app"] = app
     return app
 
@@ -303,35 +296,6 @@ class ControlWindow(QMainWindow):
             except Exception:
                 logger.exception("Failed to restore Accessory policy on hide")
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        if IS_MACOS:
-            try:
-                from macos_tray import schedule_dock_icon_refresh
-
-                icon_path = ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None
-                schedule_dock_icon_refresh(icon_path)
-            except Exception:
-                logger.exception("Failed to refresh Dock icon in showEvent")
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        # Re-assert when the window becomes active — Qt may have just reset the tile.
-        if not IS_MACOS:
-            return
-        try:
-            from PySide6.QtCore import QEvent
-
-            if event.type() in (
-                QEvent.Type.WindowActivate,
-                QEvent.Type.ActivationChange,
-            ):
-                from macos_tray import set_dock_icon
-
-                set_dock_icon(ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None)
-        except Exception:
-            pass
-
     def show_and_raise(self):
         if IS_MACOS:
             try:
@@ -355,16 +319,6 @@ class ControlWindow(QMainWindow):
             app.setWindowIcon(_app_icon())
         self.setWindowIcon(_app_icon())
         self.refresh_buttons()
-
-        if IS_MACOS:
-            try:
-                from macos_tray import schedule_dock_icon_refresh
-
-                icon_path = ICON_PATH_PNG if os.path.exists(ICON_PATH_PNG) else None
-                schedule_dock_icon_refresh(icon_path)
-            except Exception:
-                logger.exception("Failed to re-apply Dock icon after show")
-
         logger.info("Control window shown/raised (visible=%s)", self.isVisible())
 
     def _clear_body(self):

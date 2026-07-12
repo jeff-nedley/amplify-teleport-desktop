@@ -4,6 +4,10 @@ macOS helpers for AmpliFi Teleport.
 - hide_dock_icon / present_app / activate_app: AppKit bits for the Qt UI process
 - MenuBarHelper: spawns macos_menubar_helper.py in a separate process so the
   status item lives in its own NSApplication (Qt cannot destroy it)
+
+Dock / notification identity icons come from the .app bundle when installed
+via the DMG. From source, macOS attributes those to Python — no runtime
+override is attempted.
 """
 
 from __future__ import annotations
@@ -17,11 +21,6 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Keep strong refs — otherwise the Dock reverts to the Python interpreter icon.
-_DOCK_ICON_IMAGE = None
-_DOCK_ICON_VIEW = None
-_DOCK_ICON_PATH: Optional[str] = None
-
 
 def hide_dock_icon() -> None:
     """Run as a menu-bar accessory — no Dock icon."""
@@ -30,109 +29,6 @@ def hide_dock_icon() -> None:
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     logger.info("macOS activation policy set to Accessory (no Dock icon)")
-
-
-def _resolve_icon_path(icon_path: Optional[str] = None) -> Optional[str]:
-    if icon_path and os.path.exists(icon_path):
-        return os.path.abspath(icon_path)
-
-    from platform_utils import resource_path
-
-    for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
-        candidate = resource_path(name)
-        if os.path.exists(candidate):
-            return os.path.abspath(candidate)
-    return None
-
-
-def set_dock_icon(icon_path: Optional[str] = None) -> bool:
-    """
-    Set the Dock / app icon to the AmpliFi Teleport artwork.
-
-    Running from source uses the python.org / Homebrew python binary, so macOS
-    defaults to the Python Dock icon. Qt also tends to reset the tile after
-    show(). We setApplicationIconImage, pin an NSImageView on the Dock tile,
-    and keep strong Python refs so the artwork sticks.
-    """
-    global _DOCK_ICON_IMAGE, _DOCK_ICON_VIEW, _DOCK_ICON_PATH
-
-    from AppKit import NSApplication, NSImage, NSImageView, NSMakeRect
-    from Foundation import NSData
-
-    path = _resolve_icon_path(icon_path) or _resolve_icon_path(_DOCK_ICON_PATH)
-    if not path:
-        logger.warning("No app icon file found for Dock")
-        return False
-
-    image = NSImage.alloc().initWithContentsOfFile_(path)
-    if image is None:
-        try:
-            image = NSImage.alloc().initByReferencingFile_(path)
-        except Exception:
-            image = None
-    if image is None:
-        data = NSData.dataWithContentsOfFile_(path)
-        if data is not None:
-            image = NSImage.alloc().initWithData_(data)
-    if image is None:
-        logger.error("Failed to load Dock icon from %s", path)
-        return False
-
-    # Keep full pixel dimensions for a sharp Dock tile (don't shrink to 18pt).
-    try:
-        reps = image.representations()
-        if reps:
-            best = max(reps, key=lambda r: int(r.pixelsWide()) * int(r.pixelsHigh()))
-            image.setSize_((float(best.pixelsWide()), float(best.pixelsHigh())))
-    except Exception:
-        try:
-            image.setSize_((256.0, 256.0))
-        except Exception:
-            pass
-
-    _DOCK_ICON_PATH = path
-    _DOCK_ICON_IMAGE = image
-
-    app = NSApplication.sharedApplication()
-    app.setApplicationIconImage_(image)
-
-    try:
-        tile = app.dockTile()
-        # Clear any previous custom view, then pin ours.
-        try:
-            tile.setContentView_(None)
-        except Exception:
-            pass
-        view = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, 256, 256))
-        try:
-            # NSImageScaleProportionallyUpOrDown == 3
-            view.setImageScaling_(3)
-        except Exception:
-            pass
-        view.setImage_(image)
-        _DOCK_ICON_VIEW = view
-        tile.setContentView_(view)
-        tile.display()
-    except Exception:
-        logger.exception("Failed to update Dock tile content view")
-
-    logger.info("Dock / application icon set from %s", path)
-    return True
-
-
-def schedule_dock_icon_refresh(icon_path: Optional[str] = None, *, delays_ms=None) -> None:
-    """Re-apply the Dock icon on the Qt event loop (fights Qt resets)."""
-    try:
-        from PySide6.QtCore import QTimer
-    except Exception:
-        set_dock_icon(icon_path)
-        return
-
-    path = icon_path
-    set_dock_icon(path)
-    for delay in delays_ms or (0, 50, 100, 250, 500, 1000, 2000):
-        QTimer.singleShot(delay, lambda p=path: set_dock_icon(p))
-
 
 
 def present_app() -> None:
@@ -146,10 +42,7 @@ def present_app() -> None:
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
-    # Policy changes reset the Dock tile to the python.org icon — re-apply ours.
-    set_dock_icon()
     app.activateIgnoringOtherApps_(True)
-    set_dock_icon()
     logger.info("macOS activation policy set to Regular (presenting window)")
 
 
