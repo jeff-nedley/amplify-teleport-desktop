@@ -63,7 +63,7 @@ def generate_config(pin=None):
         if not config_str:
             raise Exception("Teleport handshake failed to produce a WireGuard config.")
         if IS_MACOS:
-            config_str = _with_macos_dns_postdown(config_str)
+            config_str = _prepare_macos_wg_config(config_str)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(config_str)
 
@@ -73,35 +73,65 @@ def generate_config(pin=None):
         return False, str(e)
 
 
-def _with_macos_dns_postdown(config: str) -> str:
+def _prepare_macos_wg_config(config: str) -> str:
     """
-    Ensure wg-quick clears tunnel DNS on macOS after down.
+    Prepare a macOS WireGuard config that does not use DNS=.
 
-    Without this, Wi-Fi often stays "connected" while DNS still points at the
-    unreachable AmpliFi resolver — pages fail to load until DNS is reset.
+    On Darwin, wg-quick's background route monitor can call set_dns() after
+    teardown (ALRM race), leaving Wi-Fi connected with a dead tunnel resolver.
+    We strip DNS= so the monitor never touches DNS; the privilege helper
+    applies/clears DNS itself around up/down.
     """
-    lines = [line for line in config.splitlines() if not line.strip().lower().startswith("postdown")]
-    postdown = (
-        "PostDown = /bin/bash -c '"
-        '/usr/sbin/networksetup -listallnetworkservices | /usr/bin/tail -n +2 | '
-        'while IFS= read -r s; do s="${s#\\*}"; '
-        '[ -n "$s" ] || continue; '
-        '/usr/sbin/networksetup -setdnsservers "$s" Empty >/dev/null 2>&1 || true; '
-        '/usr/sbin/networksetup -setsearchdomains "$s" Empty >/dev/null 2>&1 || true; '
-        "done'"
-    )
-    # Place with other [Interface] options (before the blank line / [Peer]).
+    dns_values: list[str] = []
+    lines: list[str] = []
+    for raw in config.splitlines():
+        stripped = raw.strip()
+        lower = stripped.lower()
+        if lower.startswith("postdown"):
+            continue
+        if lower.startswith("dns ") or lower.startswith("dns="):
+            _, _, value = stripped.partition("=")
+            for part in value.split(","):
+                part = part.strip()
+                if part:
+                    dns_values.append(part)
+            continue
+        if lower.startswith("# amplifiteleportdns"):
+            continue
+        lines.append(raw)
+
+    # Sidecar file read by the helper on up
+    dns_sidecar = CONFIG_PATH + ".dns"
+    try:
+        if dns_values:
+            with open(dns_sidecar, "w", encoding="utf-8") as handle:
+                handle.write(" ".join(dns_values) + "\n")
+        elif os.path.exists(dns_sidecar):
+            os.remove(dns_sidecar)
+    except OSError:
+        logger.debug("Could not write DNS sidecar", exc_info=True)
+
     out: list[str] = []
     inserted = False
     for line in lines:
         if not inserted and line.strip().startswith("[Peer]"):
-            out.append(postdown)
-            out.append("")
+            if dns_values:
+                out.append(
+                    "# AmpliFiTeleportDNS = "
+                    + ", ".join(dns_values)
+                    + "  # applied by helper (not wg-quick DNS=)"
+                )
+                out.append("")
             inserted = True
         out.append(line)
-    if not inserted:
-        out.append(postdown)
-    return "\n".join(out) + "\n"
+    if not inserted and dns_values:
+        out.append(
+            "# AmpliFiTeleportDNS = "
+            + ", ".join(dns_values)
+            + "  # applied by helper (not wg-quick DNS=)"
+        )
+
+    return "\n".join(out).rstrip() + "\n"
 
 
 def activate_tunnel():
@@ -255,6 +285,9 @@ def _activate_macos():
             "or reinstall from the Setup DMG."
         )
 
+    # Rewrite older configs that still use DNS= (triggers the macOS monitor race).
+    _migrate_macos_config_dns()
+
     # Only tear down first when something looks active
     if _is_active_macos():
         down = run_macos_wg_helper("down", CONFIG_PATH, timeout=60)
@@ -276,10 +309,32 @@ def _activate_macos():
     if up.returncode != 0:
         err = (up.stderr or up.stdout or "").strip()
         _set_active_marker(False)
+        # If up failed, make sure we did not leave tunnel DNS stuck.
+        try:
+            run_macos_wg_helper("restore-dns", CONFIG_PATH, timeout=45)
+        except Exception:
+            logger.debug("DNS restore after failed activate", exc_info=True)
         return False, f"Activation failed: {err or up.returncode}"
 
     _set_active_marker(True)
     return True, "Tunnel activated!"
+
+
+def _migrate_macos_config_dns() -> None:
+    """Strip DNS= from an existing teleport.conf so wg-quick cannot re-break DNS."""
+    if not IS_MACOS or not os.path.exists(CONFIG_PATH):
+        return
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
+            original = handle.read()
+        if not re.search(r"(?im)^\s*DNS\s*=", original):
+            return
+        migrated = _prepare_macos_wg_config(original)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
+            handle.write(migrated)
+        logger.info("Migrated teleport.conf off wg-quick DNS= for macOS safety")
+    except OSError:
+        logger.debug("Could not migrate macOS WireGuard DNS settings", exc_info=True)
 
 
 def _deactivate_macos():
@@ -289,11 +344,13 @@ def _deactivate_macos():
             "Quit and relaunch the app to approve the one-time privilege prompt."
         )
 
-    result = run_macos_wg_helper("down", CONFIG_PATH, timeout=60)
+    _migrate_macos_config_dns()
 
-    # Always clear DNS left behind by wg-quick (Wi-Fi "connected" but nothing loads).
+    result = run_macos_wg_helper("down", CONFIG_PATH, timeout=90)
+
+    # Hardened DNS restore (also runs inside helper; repeat here for safety).
     try:
-        dns = run_macos_wg_helper("restore-dns", CONFIG_PATH, timeout=30)
+        dns = run_macos_wg_helper("restore-dns", CONFIG_PATH, timeout=45)
         logger.info(
             "DNS restore after disconnect: rc=%s out=%s",
             dns.returncode,
@@ -321,7 +378,6 @@ def _deactivate_macos():
     poll_interval = 0.8
     elapsed = 0.0
     while elapsed < max_wait:
-        # Clear marker early so UI/status checks don't keep reporting active
         _set_active_marker(False)
         if not _runtime_tunnel_present():
             logger.info("Tunnel successfully deactivated")
