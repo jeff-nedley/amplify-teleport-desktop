@@ -1,0 +1,288 @@
+#!/bin/bash
+# Copyright (c) 2026 Jeff Nedley
+# Licensed under the MIT License (see LICENSE for details)
+#
+# macOS pkg postinstall — mirrors app_installer_script.iss:
+#   1. Detect whether WireGuard CLI tools are installed
+#   2. If missing, download/install them silently (Homebrew wireguard-tools + bash)
+#   3. Verify installation
+#   4. Launch the app (same as Inno [Run] postinstall)
+#
+# Runs as root under installer(8).
+
+set -euo pipefail
+
+LOG_DIR="/Library/Logs/AmpliFiTeleport"
+LOG_FILE="${LOG_DIR}/install.log"
+SUPPORT_DIR="/Library/Application Support/AmpliFiTeleport"
+APP_NAME="AmpliFi Teleport for Desktop"
+APP_PATH="/Applications/${APP_NAME}.app"
+
+mkdir -p "$LOG_DIR" "$SUPPORT_DIR"
+chmod 755 "$LOG_DIR" "$SUPPORT_DIR"
+
+log() {
+    # Write progress to stderr so $(...) captures of helper return values stay clean
+    local msg
+    msg="$(date '+%Y-%m-%d %H:%M:%S') [postinstall] $*"
+    echo "$msg" >> "$LOG_FILE"
+    echo "$msg" >&2
+}
+
+console_user() {
+    local user
+    user="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+    if [[ -n "$user" && "$user" != "root" && "$user" != "_mbsetupuser" ]]; then
+        echo "$user"
+        return
+    fi
+    if [[ -n "${USER:-}" && "$USER" != "root" ]]; then
+        echo "$USER"
+        return
+    fi
+    ls /Users 2>/dev/null | grep -Ev '^(Shared|Guest|\..*)$' | head -1 || true
+}
+
+run_as_user() {
+    local user="$1"
+    shift
+    local home
+    home="$(dscl . -read "/Users/${user}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [[ -z "$home" ]] && home="/Users/${user}"
+    launchctl asuser "$(id -u "$user")" \
+        sudo -u "$user" -H env HOME="$home" USER="$user" LOGNAME="$user" "$@"
+}
+
+brew_bin_for_user() {
+    local user="$1"
+    local home arch
+    home="$(dscl . -read "/Users/${user}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [[ -z "$home" ]] && home="/Users/${user}"
+    arch="$(uname -m)"
+
+    for candidate in \
+        "/opt/homebrew/bin/brew" \
+        "/usr/local/bin/brew" \
+        "${home}/homebrew/bin/brew"
+    do
+        if [[ -x "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    if [[ "$arch" == "arm64" && -x /opt/homebrew/bin/brew ]]; then
+        echo /opt/homebrew/bin/brew
+        return 0
+    fi
+    if [[ -x /usr/local/bin/brew ]]; then
+        echo /usr/local/bin/brew
+        return 0
+    fi
+    return 1
+}
+
+# Mirror IsWireGuardInstalled() from the Inno script — CLI tools our app needs.
+is_wireguard_installed() {
+    local wg_path wg_quick_path
+    for wg_path in \
+        /opt/homebrew/bin/wg \
+        /usr/local/bin/wg \
+        /opt/local/bin/wg \
+        "$(command -v wg 2>/dev/null || true)"
+    do
+        [[ -z "$wg_path" || ! -x "$wg_path" ]] && continue
+        wg_quick_path="$(dirname "$wg_path")/wg-quick"
+        if [[ -x "$wg_quick_path" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_homebrew() {
+    local user="$1"
+    local brew_path arch prefix
+
+    if brew_path="$(brew_bin_for_user "$user")"; then
+        log "Homebrew already present: $brew_path"
+        echo "$brew_path"
+        return 0
+    fi
+
+    arch="$(uname -m)"
+    if [[ "$arch" == "arm64" ]]; then
+        prefix="/opt/homebrew"
+    else
+        prefix="/usr/local"
+    fi
+
+    log "Homebrew missing — installing silently for user ${user} (prefix ${prefix})"
+    # Pre-create prefix as root so NONINTERACTIVE brew installer does not need sudo -n
+    mkdir -p "$prefix"
+    chown -R "${user}:admin" "$prefix" 2>/dev/null || chown -R "${user}:staff" "$prefix"
+
+    if ! run_as_user "$user" /bin/bash -c \
+        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'; then
+        log "ERROR: Homebrew silent install failed"
+        return 1
+    fi
+
+    local home brew_shellenv
+    home="$(dscl . -read "/Users/${user}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [[ -z "$home" ]] && home="/Users/${user}"
+    if [[ -x "${prefix}/bin/brew" ]]; then
+        brew_shellenv="eval \"\$(${prefix}/bin/brew shellenv)\""
+        for rc in .zprofile .bash_profile .profile; do
+            if [[ -f "${home}/${rc}" ]] && grep -q "brew shellenv" "${home}/${rc}" 2>/dev/null; then
+                continue
+            fi
+            {
+                echo ""
+                echo "# AmpliFi Teleport installer — Homebrew"
+                echo "$brew_shellenv"
+            } >> "${home}/${rc}"
+            chown "${user}:staff" "${home}/${rc}" 2>/dev/null || true
+        done
+    fi
+
+    if brew_path="$(brew_bin_for_user "$user")"; then
+        log "Homebrew installed: $brew_path"
+        echo "$brew_path"
+        return 0
+    fi
+    log "ERROR: Homebrew installed but brew binary not found"
+    return 1
+}
+
+install_wireguard_silently() {
+    local user="$1"
+    local brew_path
+
+    brew_path="$(ensure_homebrew "$user")" || return 1
+
+    log "Installing wireguard-tools and bash silently via Homebrew (mirrors Windows MSI silent install)"
+    # bash 4+ required by wg-quick on macOS (system bash is 3.2)
+    if ! run_as_user "$user" "$brew_path" install --quiet wireguard-tools bash; then
+        log "ERROR: brew install wireguard-tools bash failed"
+        return 1
+    fi
+
+    echo "1" > "${SUPPORT_DIR}/wireguard_installed_by_setup"
+    date > "${SUPPORT_DIR}/wireguard_installed_at"
+    chmod 644 "${SUPPORT_DIR}/wireguard_installed_by_setup" "${SUPPORT_DIR}/wireguard_installed_at"
+    return 0
+}
+
+show_error() {
+    local message="$1"
+    local user
+    user="$(console_user || true)"
+    if [[ -n "${user:-}" ]]; then
+        run_as_user "$user" osascript -e "display dialog \"${message}\" with title \"AmpliFi Teleport Setup\" buttons {\"OK\"} default button 1 with icon stop" \
+            >/dev/null 2>&1 || true
+    fi
+}
+
+log "==== AmpliFi Teleport for Desktop macOS postinstall starting ===="
+log "App path: $APP_PATH"
+
+USER_NAME="$(console_user || true)"
+log "Console user: ${USER_NAME:-unknown}"
+
+# Ensure Applications uninstaller is executable (payload may preserve mode)
+if [[ -d "/Applications/Uninstall AmpliFi Teleport.app" ]]; then
+    chmod 755 "/Applications/Uninstall AmpliFi Teleport.app/Contents/MacOS/uninstall" 2>/dev/null || true
+    # Nudge Launch Services so Spotlight can find the new uninstaller app.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -f "/Applications/Uninstall AmpliFi Teleport.app" >/dev/null 2>&1 || true
+fi
+# Clean up any legacy .command uninstaller from older installs
+rm -f "/Applications/Uninstall AmpliFi Teleport.command" 2>/dev/null || true
+
+# Install passwordless WireGuard helper (one admin prompt at install time — never again in-app)
+PRIV_SRC="/Library/Application Support/AmpliFiTeleport/privileged"
+if [[ -z "${USER_NAME:-}" ]]; then
+    log "WARNING: No console user — skipping WireGuard privilege helper install"
+else
+    HELPER_SRC=""
+    for candidate in \
+        "${PRIV_SRC}/wg-helper.sh" \
+        "/tmp/amplifi_teleport_privileged/wg-helper.sh"
+    do
+        if [[ -f "$candidate" ]]; then
+            HELPER_SRC="$candidate"
+            break
+        fi
+    done
+
+    INSTALL_SRC=""
+    for candidate in \
+        "${PRIV_SRC}/install_privileges.sh" \
+        "/tmp/amplifi_teleport_privileged/install_privileges.sh"
+    do
+        if [[ -f "$candidate" ]]; then
+            INSTALL_SRC="$candidate"
+            break
+        fi
+    done
+
+    # Fallback: helper may be next to this postinstall script in the pkg scripts dir
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    [[ -z "$HELPER_SRC" && -f "${SCRIPT_DIR}/wg-helper.sh" ]] && HELPER_SRC="${SCRIPT_DIR}/wg-helper.sh"
+    [[ -z "$INSTALL_SRC" && -f "${SCRIPT_DIR}/install_privileges.sh" ]] && INSTALL_SRC="${SCRIPT_DIR}/install_privileges.sh"
+
+    if [[ -n "$HELPER_SRC" && -n "$INSTALL_SRC" ]]; then
+        log "Installing passwordless WireGuard helper for ${USER_NAME}"
+        if /bin/bash "$INSTALL_SRC" "$USER_NAME" "$HELPER_SRC"; then
+            log "WireGuard privilege helper installed"
+        else
+            log "ERROR: Failed to install WireGuard privilege helper"
+            show_error "Could not install the WireGuard privilege helper. The app may ask for your password when connecting."
+        fi
+    else
+        log "WARNING: Privilege helper scripts not found in package payload"
+    fi
+fi
+
+WIREGUARD_WAS_MISSING=0
+if is_wireguard_installed; then
+    log "WireGuard CLI tools already installed — skipping dependency install"
+else
+    WIREGUARD_WAS_MISSING=1
+    log "WireGuard not detected — will install silently (same behavior as Windows Inno setup)"
+
+    if [[ -z "${USER_NAME:-}" ]]; then
+        log "ERROR: Could not determine console user for Homebrew install"
+        show_error "WireGuard could not be installed automatically (no logged-in user). Please install manually: brew install wireguard-tools bash"
+    else
+        if install_wireguard_silently "$USER_NAME"; then
+            log "WireGuard tools installed successfully"
+            # Brief settle time (Inno Sleep(3000) after MSI)
+            sleep 3
+        else
+            show_error "WireGuard install failed. Please install manually from https://www.wireguard.com/install/ or run: brew install wireguard-tools bash"
+        fi
+    fi
+fi
+
+# Post-install verification (mirrors ssPostInstall warning)
+if [[ "$WIREGUARD_WAS_MISSING" -eq 1 ]] && ! is_wireguard_installed; then
+    log "WARNING: WireGuard was attempted but still not detected"
+    show_error "WireGuard was attempted but still not detected. Install with: brew install wireguard-tools bash"
+fi
+
+# Launch app after install (mirrors Inno [Run] postinstall)
+if [[ -d "$APP_PATH" ]]; then
+    log "Launching ${APP_NAME}"
+    if [[ -n "${USER_NAME:-}" ]]; then
+        run_as_user "$USER_NAME" open "$APP_PATH" || open "$APP_PATH" || true
+    else
+        open "$APP_PATH" || true
+    fi
+else
+    log "WARNING: App not found at $APP_PATH — skip launch"
+fi
+
+log "==== postinstall finished ===="
+exit 0
