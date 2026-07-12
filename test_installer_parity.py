@@ -51,6 +51,11 @@ class MacInstallerParityTests(unittest.TestCase):
         self.assertIn("stage_uninstaller_app", script)
         self.assertIn("Uninstall AmpliFi Teleport.app", script)
         self.assertIn("CFBundleDisplayName", script)
+        self.assertIn("CFBundleIconFile", script)
+        self.assertIn("uninstall-icon.png", script)
+        self.assertTrue(
+            os.path.exists(os.path.join(ROOT, "macos/uninstaller/uninstall-icon.png"))
+        )
 
     def test_inno_still_has_wireguard_silent_install(self):
         iss = self._read("app_installer_script.iss")

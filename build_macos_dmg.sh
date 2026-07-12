@@ -120,8 +120,9 @@ stage_uninstaller_app() {
     local dest="$1"
     local macos_dir="${dest}/Contents/MacOS"
     local resources_dir="${dest}/Contents/Resources"
-    local version
+    local version icon_src iconset_dir icns_path
     version="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
+    icon_src="${ROOT}/macos/uninstaller/uninstall-icon.png"
 
     rm -rf "$dest"
     mkdir -p "$macos_dir" "$resources_dir"
@@ -129,9 +130,43 @@ stage_uninstaller_app() {
     cp "$UNINSTALLER_SRC" "${macos_dir}/uninstall"
     chmod 755 "${macos_dir}/uninstall"
 
-    if [[ -f "${ROOT}/tray-icon.png" ]]; then
-        # Best-effort icon; Launch Services still indexes the app without it.
-        cp "${ROOT}/tray-icon.png" "${resources_dir}/AppIcon.png"
+    if [[ ! -f "$icon_src" ]]; then
+        log "Generating uninstall icon from tray-icon.png..."
+        python3 "${ROOT}/macos/uninstaller/generate_uninstall_icon.py"
+    fi
+
+    if [[ -f "$icon_src" ]]; then
+        cp "$icon_src" "${resources_dir}/AppIcon.png"
+        # Build a proper .icns so Finder / Spotlight show the badge icon.
+        if command -v iconutil >/dev/null 2>&1; then
+            iconset_dir="${BUILD_DIR}/uninstall.iconset"
+            icns_path="${resources_dir}/AppIcon.icns"
+            rm -rf "$iconset_dir"
+            mkdir -p "$iconset_dir"
+            python3 - "$icon_src" "$iconset_dir" <<'PY'
+import sys
+from pathlib import Path
+from PIL import Image
+
+src = Image.open(sys.argv[1]).convert("RGBA")
+out = Path(sys.argv[2])
+for size in (16, 32, 64, 128, 256, 512):
+    src.resize((size, size), Image.Resampling.LANCZOS).save(out / f"icon_{size}x{size}.png")
+    src.resize((size * 2, size * 2), Image.Resampling.LANCZOS).save(
+        out / f"icon_{size}x{size}@2x.png"
+    )
+PY
+            if iconutil -c icns "$iconset_dir" -o "$icns_path"; then
+                log "Installed uninstaller AppIcon.icns"
+            else
+                log "WARNING: iconutil failed; Finder may fall back to a generic icon"
+            fi
+            rm -rf "$iconset_dir"
+        else
+            log "WARNING: iconutil not found; shipping PNG icon only"
+        fi
+    else
+        log "WARNING: uninstall-icon.png missing"
     fi
 
     cat > "${dest}/Contents/Info.plist" <<EOF
@@ -145,6 +180,8 @@ stage_uninstaller_app() {
     <string>Uninstall AmpliFi Teleport</string>
     <key>CFBundleExecutable</key>
     <string>uninstall</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.jeffnedley.amplifiteleport.uninstall</string>
     <key>CFBundleInfoDictionaryVersion</key>
