@@ -7,9 +7,14 @@
 #   sudo -n /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper ...
 #
 # Usage:
-#   amplifi-teleport-wg-helper up   <absolute-path-to-teleport.conf>
-#   amplifi-teleport-wg-helper down <absolute-path-to-teleport.conf>
-#   amplifi-teleport-wg-helper status <absolute-path-to-teleport.conf>
+#   amplifi-teleport-wg-helper up          <absolute-path-to-teleport.conf>
+#   amplifi-teleport-wg-helper down        <absolute-path-to-teleport.conf>
+#   amplifi-teleport-wg-helper status      <absolute-path-to-teleport.conf>
+#   amplifi-teleport-wg-helper restore-dns <absolute-path-to-teleport.conf>
+#
+# On macOS, wg-quick often leaves DNS pointed at the tunnel resolver after
+# "down", so Wi-Fi looks connected but nothing loads. We always restore
+# DHCP DNS after teardown.
 
 set -euo pipefail
 
@@ -17,11 +22,11 @@ ACTION="${1:-}"
 CONFIG="${2:-}"
 
 usage() {
-    echo "Usage: $0 up|down|status /absolute/path/to/teleport.conf" >&2
+    echo "Usage: $0 up|down|status|restore-dns /absolute/path/to/teleport.conf" >&2
     exit 2
 }
 
-[[ "$ACTION" == "up" || "$ACTION" == "down" || "$ACTION" == "status" ]] || usage
+[[ "$ACTION" == "up" || "$ACTION" == "down" || "$ACTION" == "status" || "$ACTION" == "restore-dns" ]] || usage
 [[ -n "$CONFIG" && "$CONFIG" == /* ]] || usage
 
 # Only allow teleport.conf under an AmpliFiTeleport application-support folder
@@ -44,6 +49,28 @@ find_tool() {
     done
     command -v "$name" 2>/dev/null || return 1
 }
+
+# Reset every network service to DHCP DNS / empty search domains.
+# Fixes the common "Wi-Fi connected but no internet" state after wg-quick down.
+restore_macos_dns() {
+    local service
+    if [[ ! -x /usr/sbin/networksetup ]]; then
+        return 0
+    fi
+    /usr/sbin/networksetup -listallnetworkservices 2>/dev/null | /usr/bin/tail -n +2 | while IFS= read -r service; do
+        # Disabled services are prefixed with "*"
+        service="${service#\*}"
+        [[ -z "$service" ]] && continue
+        /usr/sbin/networksetup -setdnsservers "$service" Empty >/dev/null 2>&1 || true
+        /usr/sbin/networksetup -setsearchdomains "$service" Empty >/dev/null 2>&1 || true
+    done
+    echo "restored-dns"
+}
+
+if [[ "$ACTION" == "restore-dns" ]]; then
+    restore_macos_dns
+    exit 0
+fi
 
 WG_QUICK="$(find_tool wg-quick)" || {
     echo "wg-quick not found" >&2
@@ -75,4 +102,15 @@ fi
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-exec "$BASH_BIN" "$WG_QUICK" "$ACTION" "$CONFIG"
+if [[ "$ACTION" == "down" ]]; then
+    set +e
+    "$BASH_BIN" "$WG_QUICK" down "$CONFIG"
+    rc=$?
+    set -e
+    # Always clear tunnel DNS even if wg-quick reported "not a WireGuard interface"
+    restore_macos_dns
+    exit "$rc"
+fi
+
+# up
+exec "$BASH_BIN" "$WG_QUICK" up "$CONFIG"

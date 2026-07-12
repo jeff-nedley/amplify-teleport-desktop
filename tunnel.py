@@ -62,6 +62,8 @@ def generate_config(pin=None):
         config_str = connect_device(device_token)
         if not config_str:
             raise Exception("Teleport handshake failed to produce a WireGuard config.")
+        if IS_MACOS:
+            config_str = _with_macos_dns_postdown(config_str)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(config_str)
 
@@ -69,6 +71,37 @@ def generate_config(pin=None):
     except Exception as e:
         logger.error("Error While Creating a New Configuration", exc_info=True)
         return False, str(e)
+
+
+def _with_macos_dns_postdown(config: str) -> str:
+    """
+    Ensure wg-quick clears tunnel DNS on macOS after down.
+
+    Without this, Wi-Fi often stays "connected" while DNS still points at the
+    unreachable AmpliFi resolver — pages fail to load until DNS is reset.
+    """
+    lines = [line for line in config.splitlines() if not line.strip().lower().startswith("postdown")]
+    postdown = (
+        "PostDown = /bin/bash -c '"
+        '/usr/sbin/networksetup -listallnetworkservices | /usr/bin/tail -n +2 | '
+        'while IFS= read -r s; do s="${s#\\*}"; '
+        '[ -n "$s" ] || continue; '
+        '/usr/sbin/networksetup -setdnsservers "$s" Empty >/dev/null 2>&1 || true; '
+        '/usr/sbin/networksetup -setsearchdomains "$s" Empty >/dev/null 2>&1 || true; '
+        "done'"
+    )
+    # Place with other [Interface] options (before the blank line / [Peer]).
+    out: list[str] = []
+    inserted = False
+    for line in lines:
+        if not inserted and line.strip().startswith("[Peer]"):
+            out.append(postdown)
+            out.append("")
+            inserted = True
+        out.append(line)
+    if not inserted:
+        out.append(postdown)
+    return "\n".join(out) + "\n"
 
 
 def activate_tunnel():
@@ -257,6 +290,18 @@ def _deactivate_macos():
         )
 
     result = run_macos_wg_helper("down", CONFIG_PATH, timeout=60)
+
+    # Always clear DNS left behind by wg-quick (Wi-Fi "connected" but nothing loads).
+    try:
+        dns = run_macos_wg_helper("restore-dns", CONFIG_PATH, timeout=30)
+        logger.info(
+            "DNS restore after disconnect: rc=%s out=%s",
+            dns.returncode,
+            (dns.stdout or "").strip(),
+        )
+    except Exception:
+        logger.exception("DNS restore after disconnect failed")
+
     if result.returncode != 0:
         err = f"{result.stderr or ''}{result.stdout or ''}".strip().lower()
         if any(

@@ -266,15 +266,39 @@ def macos_helper_ready() -> bool:
         return False
 
 
-def install_macos_privileges() -> tuple[bool, str]:
+def macos_helper_outdated() -> bool:
+    """True when the installed helper differs from the one shipped with the app."""
+    if not IS_MACOS:
+        return False
+    src = _macos_helper_source()
+    if not src or not os.path.isfile(MACOS_WG_HELPER):
+        return False
+    try:
+        import hashlib
+
+        def _sha(path: str) -> str:
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        return _sha(src) != _sha(MACOS_WG_HELPER)
+    except OSError:
+        return True
+
+
+def install_macos_privileges(force: bool = False) -> tuple[bool, str]:
     """
     One-time admin prompt that installs the helper + sudoers rule.
     After this succeeds, Connect/Disconnect never ask for a password again.
+    Pass force=True (or when the shipped helper is newer) to refresh the helper.
     """
     if not IS_MACOS:
         return True, "not macOS"
 
-    if macos_helper_ready():
+    outdated = macos_helper_outdated()
+    if macos_helper_ready() and not force and not outdated:
         return True, "already installed"
 
     helper_src = _macos_helper_source()
@@ -311,7 +335,7 @@ def install_macos_privileges() -> tuple[bool, str]:
         return False, err or "Privilege install was cancelled or failed."
 
     if macos_helper_ready():
-        return True, "installed"
+        return True, "updated" if (force or outdated) else "installed"
     return False, (
         "Admin approval succeeded, but passwordless WireGuard helper is still unavailable. "
         "Try quitting and relaunching the app."
@@ -336,7 +360,10 @@ def run_elevated_startup() -> None:
         sys.exit(0)
 
     if IS_MACOS:
-        ok, msg = install_macos_privileges()
+        outdated = macos_helper_outdated()
+        if macos_helper_ready() and not outdated:
+            return
+        ok, msg = install_macos_privileges(force=outdated)
         if not ok:
             logger.error("macOS privilege setup failed: %s", msg)
             # Don't abort startup — UI can still open and show the error on Connect
@@ -346,7 +373,7 @@ def run_elevated_startup() -> None:
 
 def run_macos_wg_helper(action: str, config_path: str, timeout: float | None = 90) -> subprocess.CompletedProcess:
     """
-    Run up/down/status through the passwordless helper.
+    Run up/down/status/restore-dns through the passwordless helper.
     Requires ensure_macos_privileges / DMG install to have succeeded.
     """
     if not os.path.isfile(MACOS_WG_HELPER):
