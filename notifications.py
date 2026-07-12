@@ -14,8 +14,10 @@ from platform_utils import IS_MACOS, IS_WINDOWS
 
 logger = logging.getLogger("AmpliFi Teleport for Desktop")
 
-# Keep recent macOS notification objects alive so GC cannot drop them pre-delivery.
+# Keep recent macOS notification / delegate objects alive.
 _MACOS_NOTIFICATION_REFS: list[object] = []
+_UN_DELEGATE = None
+_NS_DELEGATE = None
 
 
 def show_toast(title, message, icon_path=None):
@@ -60,6 +62,9 @@ def _notify_macos(title, message):
 
     Notification Center uses the delivering app's bundle icon. From source
     that is Python; from the DMG/.app it is AmpliFi Teleport.
+
+    A foreground delegate is required or macOS only files the banner in
+    Notification Center while our control window is active.
     """
     if _notify_macos_user_notifications(title, message):
         return
@@ -70,8 +75,74 @@ def _notify_macos(title, message):
     _notify_macos_osascript(title, message)
 
 
+def _foreground_presentation_options():
+    """Banner + sound (+ list when available) while the app is frontmost."""
+    try:
+        from UserNotifications import (
+            UNNotificationPresentationOptionAlert,
+            UNNotificationPresentationOptionBanner,
+            UNNotificationPresentationOptionList,
+            UNNotificationPresentationOptionSound,
+        )
+
+        options = int(UNNotificationPresentationOptionSound)
+        try:
+            options |= int(UNNotificationPresentationOptionBanner)
+            options |= int(UNNotificationPresentationOptionList)
+        except Exception:
+            options |= int(UNNotificationPresentationOptionAlert)
+        return options
+    except Exception:
+        # Sound | Banner | List  (macOS 11+); Sound | Alert on older.
+        return (1 << 1) | (1 << 4) | (1 << 3)
+
+
+def _ensure_un_delegate(center) -> None:
+    """Show banners even when the Qt control window is focused."""
+    global _UN_DELEGATE
+    if _UN_DELEGATE is not None:
+        return
+
+    from Foundation import NSObject
+
+    presentation = _foreground_presentation_options()
+
+    class _UNDelegate(NSObject):
+        def userNotificationCenter_willPresentNotification_withCompletionHandler_(
+            self, _center, _notification, completion_handler
+        ):
+            completion_handler(presentation)
+
+        def userNotificationCenter_didReceiveNotificationResponse_withCompletionHandler_(
+            self, _center, _response, completion_handler
+        ):
+            completion_handler()
+
+    _UN_DELEGATE = _UNDelegate.alloc().init()
+    _MACOS_NOTIFICATION_REFS.append(_UN_DELEGATE)
+    center.setDelegate_(_UN_DELEGATE)
+    logger.info("Installed UNUserNotificationCenter foreground delegate")
+
+
+def _ensure_ns_delegate(center) -> None:
+    global _NS_DELEGATE
+    if _NS_DELEGATE is not None:
+        return
+
+    from Foundation import NSObject
+
+    class _NSDelegate(NSObject):
+        def userNotificationCenter_shouldPresentNotification_(self, _center, _notification):
+            return True
+
+    _NS_DELEGATE = _NSDelegate.alloc().init()
+    _MACOS_NOTIFICATION_REFS.append(_NS_DELEGATE)
+    center.setDelegate_(_NS_DELEGATE)
+    logger.info("Installed NSUserNotificationCenter shouldPresent delegate")
+
+
 def _notify_macos_user_notifications(title, message) -> bool:
-    """macOS 10.14+ UserNotifications (identity icon only — no attachment)."""
+    """macOS 10.14+ UserNotifications with foreground banner presentation."""
     try:
         from UserNotifications import (
             UNMutableNotificationContent,
@@ -84,11 +155,14 @@ def _notify_macos_user_notifications(title, message) -> bool:
 
     try:
         center = UNUserNotificationCenter.currentNotificationCenter()
+        _ensure_un_delegate(center)
         try:
             # UNAuthorizationOptionBadge|Sound|Alert
             center.requestAuthorizationWithOptions_completionHandler_(
                 (1 << 0) | (1 << 1) | (1 << 2),
-                lambda _granted, _error: None,
+                lambda granted, error: logger.info(
+                    "Notification authorization granted=%s error=%s", granted, error
+                ),
             )
         except Exception:
             pass
@@ -122,13 +196,16 @@ def _notify_macos_user_notifications(title, message) -> bool:
 
 
 def _notify_macos_nsusernotification(title, message) -> bool:
-    """Legacy NSUserNotification (identity icon only — no contentImage)."""
+    """Legacy NSUserNotification — force present while app is active."""
     try:
         from Foundation import NSUserNotification, NSUserNotificationCenter
     except Exception:
         return False
 
     try:
+        center = NSUserNotificationCenter.defaultUserNotificationCenter()
+        _ensure_ns_delegate(center)
+
         note = NSUserNotification.alloc().init()
         note.setTitle_(str(title))
         note.setSubtitle_("AmpliFi Teleport for Desktop")
@@ -139,9 +216,7 @@ def _notify_macos_nsusernotification(title, message) -> bool:
             pass
 
         _MACOS_NOTIFICATION_REFS[:] = _MACOS_NOTIFICATION_REFS[-8:] + [note]
-        NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(
-            note
-        )
+        center.deliverNotification_(note)
         logger.info("Posted NSUserNotification banner (%s)", title)
         return True
     except Exception:
