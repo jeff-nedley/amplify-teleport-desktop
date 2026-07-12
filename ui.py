@@ -566,6 +566,14 @@ def show_control_window():
 
 
 def quit_application():
+    """Fully exit: tear down any active tunnel first (Windows + macOS), then quit."""
+    try:
+        logger.info("Quit requested — disconnecting tunnel if active")
+        success, msg = deactivate_tunnel()
+        logger.info("Disconnect on quit: success=%s (%s)", success, msg)
+    except Exception:
+        logger.exception("Error while disconnecting tunnel during quit")
+
     tray = _app_state.get("tray")
     if tray is not None:
         try:
