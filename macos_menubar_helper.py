@@ -8,6 +8,8 @@ destroy the status item. Prints commands to stdout:
   OPEN  — user chose Open Controls
   QUIT  — user chose Quit
 
+Parent may write EXIT to stdin to tear down the status item and exit.
+
 Optional argv[1] / AMPLIFI_TRAY_ICON: path to the app icon (PNG/ICNS).
 """
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 
 from AppKit import (
     NSApplication,
@@ -30,6 +33,7 @@ from Foundation import NSObject
 from PyObjCTools import AppHelper
 
 _RETAINED: list[object] = []
+_STATUS_ITEM = None
 
 
 class HelperDelegate(NSObject):
@@ -38,7 +42,20 @@ class HelperDelegate(NSObject):
 
     def quitApp_(self, _sender):  # noqa: N802
         print("QUIT", flush=True)
-        AppHelper.stopEventLoop()
+        _shutdown_status_item()
+
+
+def _shutdown_status_item() -> None:
+    """Remove the menu-bar item, then stop the Cocoa run loop."""
+    global _STATUS_ITEM
+    status = _STATUS_ITEM
+    _STATUS_ITEM = None
+    if status is not None:
+        try:
+            NSStatusBar.systemStatusBar().removeStatusItem_(status)
+        except Exception:
+            pass
+    AppHelper.stopEventLoop()
 
 
 def _icon_path() -> str | None:
@@ -70,7 +87,23 @@ def _load_menu_bar_image(path: str) -> object | None:
     return image
 
 
+def _watch_parent_stdin() -> None:
+    """Exit when the parent closes stdin or sends EXIT (app quit / crash teardown)."""
+    try:
+        for raw in sys.stdin:
+            if (raw or "").strip().upper() == "EXIT":
+                break
+        else:
+            # EOF — parent process went away
+            pass
+    except Exception:
+        pass
+    AppHelper.callAfter(_shutdown_status_item)
+
+
 def main() -> int:
+    global _STATUS_ITEM
+
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
@@ -86,6 +119,7 @@ def main() -> int:
         else float(NSVariableStatusItemLength)
     )
     status = NSStatusBar.systemStatusBar().statusItemWithLength_(length)
+    _STATUS_ITEM = status
     _RETAINED.append(status)
 
     button = status.button()
@@ -117,6 +151,12 @@ def main() -> int:
     menu.addItem_(quit_item)
     _RETAINED.append(menu)
     status.setMenu_(menu)
+
+    # Pair lifetime to the parent app: EXIT command or stdin EOF tears us down.
+    watcher = threading.Thread(
+        target=_watch_parent_stdin, name="amplifi-menubar-stdin", daemon=True
+    )
+    watcher.start()
 
     print("READY", flush=True)
     AppHelper.runEventLoop()

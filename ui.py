@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import sys
@@ -923,6 +924,7 @@ def start_ui():
     window = ControlWindow()
     _app_state["window"] = window
     _app_state["tray"] = None
+    atexit.register(_stop_tray)
 
     if IS_MACOS:
         try:
@@ -984,22 +986,31 @@ def show_control_window():
 
 
 def _stop_tray():
-    tray = _app_state.get("tray")
+    """Tear down tray / menu-bar helper so the icon cannot outlive the app."""
+    tray = _app_state.pop("tray", None)
     if tray is None:
         return
     try:
         if hasattr(tray, "stop"):
             tray.stop()
-        elif hasattr(tray, "hide"):
-            tray.hide()
+        else:
+            # QSystemTrayIcon
+            try:
+                tray.setVisible(False)
+            except Exception:
+                pass
+            try:
+                tray.hide()
+            except Exception:
+                pass
     except Exception:
         logger.exception("Failed to tear down tray / menu bar helper")
-    _app_state["tray"] = None
 
 
 def quit_application(skip_deactivate: bool = False):
     """Exit quickly: tear down UI first, disconnect tunnel without blocking the user."""
     if _app_state.get("exiting"):
+        _stop_tray()
         os._exit(0)
         return
     _app_state["exiting"] = True
@@ -1011,6 +1022,7 @@ def quit_application(skip_deactivate: bool = False):
         except Exception:
             pass
 
+    # Always drop the tray/menu-bar icon before process exit.
     _stop_tray()
 
     if not skip_deactivate:
@@ -1024,6 +1036,7 @@ def quit_application(skip_deactivate: bool = False):
             except Exception:
                 logger.exception("Error while disconnecting tunnel during quit")
             finally:
+                _stop_tray()
                 os._exit(0)
 
         threading.Thread(

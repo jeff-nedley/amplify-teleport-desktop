@@ -93,6 +93,11 @@ class MenuBarHelper:
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
+    @property
+    def pid(self) -> Optional[int]:
+        proc = self._proc
+        return proc.pid if proc is not None and proc.poll() is None else None
+
     def start(self) -> bool:
         if self.is_running:
             return True
@@ -114,7 +119,7 @@ class MenuBarHelper:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,
                 text=True,
                 bufsize=1,
                 start_new_session=True,
@@ -139,18 +144,56 @@ class MenuBarHelper:
         return True
 
     def stop(self) -> None:
+        """Ask the helper to remove its status item, then ensure the process is gone."""
+        import signal
+
         self._stopping = True
         proc = self._proc
         self._proc = None
         if proc is None:
             return
+
+        pid = proc.pid
         try:
-            if proc.poll() is None:
-                proc.terminate()
+            if proc.poll() is None and proc.stdin is not None:
                 try:
-                    proc.wait(timeout=2)
+                    proc.stdin.write("EXIT\n")
+                    proc.stdin.flush()
+                    proc.stdin.close()
+                except Exception:
+                    logger.debug("Could not send EXIT to menu bar helper", exc_info=True)
+                try:
+                    proc.wait(timeout=1.5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    pass
+
+            if proc.poll() is None:
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except Exception:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
+            if proc.poll() is None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    logger.warning("Menu bar helper pid=%s did not exit after SIGKILL", pid)
+            else:
+                logger.info("Stopped macOS menu bar helper pid=%s", pid)
         except Exception:
             logger.exception("Failed to stop menu bar helper")
 
