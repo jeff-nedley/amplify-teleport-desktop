@@ -14,7 +14,7 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 - One-time Teleport PIN entry (stored securely in the app data folder)
 - Reconnect without re-entering the PIN
 - System tray (Windows) / menu bar status item (macOS, no Dock icon)
-- Identical dark UI on Windows and macOS (PySide6 / Qt)
+- Identical professional UI on Windows and macOS (PySide6 / Qt), with AmpliFi branding
 - Desktop notifications for status and errors
 - Installer automatically installs WireGuard when it is missing
 

@@ -9,12 +9,28 @@ import logging
 import os
 import sys
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import (
+    QEasingCurve,
+    QObject,
+    QPropertyAnimation,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QIcon,
+    QLinearGradient,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,6 +38,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -39,86 +56,200 @@ from tunnel import (
 
 logger = logging.getLogger("AmpliFi Teleport for Desktop")
 
+# Brand palette derived from tray-icon.png (cyan signal on deep navy)
 COLORS = {
-    "bg": "#181818",
-    "header": "#1a9aff",
-    "button": "#1a9aff",
-    "button_hover": "#0d6efd",
-    "danger": "#e74c3c",
-    "danger_hover": "#c0392b",
-    "text": "#ffffff",
-    "muted_text": "#888888",
-    "entry_bg": "#2d2d2d",
-    "entry_border": "#3a3a3a",
+    "bg_top": "#EAF2F8",
+    "bg_bottom": "#F7FAFC",
+    "ink": "#0B2540",
+    "ink_soft": "#3D5A73",
+    "muted": "#6B8499",
+    "line": "#C9D7E4",
+    "accent": "#0E8EC8",
+    "accent_hover": "#0A7BB0",
+    "accent_pressed": "#086A98",
+    "accent_soft": "#D7EEF8",
+    "connected": "#1F9D6A",
+    "connected_soft": "#E3F6EC",
+    "disconnected": "#8A9AAB",
+    "danger": "#C24747",
+    "danger_hover": "#A83B3B",
+    "danger_soft": "#F8E8E8",
+    "field": "#FFFFFF",
+    "field_border": "#B7C9D9",
+    "white": "#FFFFFF",
 }
 
 APP_STYLESHEET = f"""
-QMainWindow, QDialog, QWidget#central {{
-    background-color: {COLORS["bg"]};
-    color: {COLORS["text"]};
+QMainWindow, QDialog {{
+    background: transparent;
+    color: {COLORS["ink"]};
+}}
+QWidget#central, QWidget#pinRoot {{
+    background: transparent;
+    color: {COLORS["ink"]};
 }}
 QLabel {{
-    color: {COLORS["text"]};
+    color: {COLORS["ink"]};
     background: transparent;
 }}
-QLabel#headerTitle {{
-    color: {COLORS["text"]};
-    font-size: 18px;
+QLabel#brandTitle {{
+    color: {COLORS["ink"]};
+    font-size: 26px;
     font-weight: 700;
+    letter-spacing: 0.2px;
+}}
+QLabel#brandSubtitle {{
+    color: {COLORS["ink_soft"]};
+    font-size: 13px;
+    font-weight: 500;
+}}
+QLabel#statusLabel {{
+    font-size: 13px;
+    font-weight: 600;
 }}
 QLabel#versionLabel {{
-    color: {COLORS["muted_text"]};
+    color: {COLORS["muted"]};
     font-size: 11px;
 }}
 QLabel#dialogTitle {{
-    font-size: 16px;
+    color: {COLORS["ink"]};
+    font-size: 18px;
     font-weight: 700;
 }}
-QFrame#headerBar {{
-    background-color: {COLORS["header"]};
+QLabel#dialogHint {{
+    color: {COLORS["muted"]};
+    font-size: 12px;
 }}
-QPushButton {{
-    background-color: {COLORS["button"]};
-    color: {COLORS["text"]};
+QLabel#errorLabel {{
+    color: {COLORS["danger"]};
+    font-size: 12px;
+}}
+QPushButton#primaryButton {{
+    background-color: {COLORS["accent"]};
+    color: {COLORS["white"]};
     border: none;
-    border-radius: 14px;
-    padding: 14px 16px;
-    font-size: 14px;
+    border-radius: 12px;
+    padding: 14px 18px;
+    font-size: 15px;
     font-weight: 700;
-    min-height: 22px;
+    min-height: 24px;
 }}
-QPushButton:hover {{
-    background-color: {COLORS["button_hover"]};
+QPushButton#primaryButton:hover {{
+    background-color: {COLORS["accent_hover"]};
 }}
-QPushButton:disabled {{
-    background-color: #555555;
-    color: #aaaaaa;
+QPushButton#primaryButton:pressed {{
+    background-color: {COLORS["accent_pressed"]};
 }}
-QPushButton#dangerButton {{
-    background-color: {COLORS["danger"]};
+QPushButton#primaryButton:disabled {{
+    background-color: #A9C3D4;
+    color: #F4FAFD;
 }}
-QPushButton#dangerButton:hover {{
-    background-color: {COLORS["danger_hover"]};
+QPushButton#disconnectButton {{
+    background-color: {COLORS["danger_soft"]};
+    color: {COLORS["danger"]};
+    border: 1px solid #E5BDBD;
+    border-radius: 12px;
+    padding: 14px 18px;
+    font-size: 15px;
+    font-weight: 700;
+    min-height: 24px;
+}}
+QPushButton#disconnectButton:hover {{
+    background-color: #F3DADA;
+    color: {COLORS["danger_hover"]};
+}}
+QPushButton#secondaryButton {{
+    background-color: transparent;
+    color: {COLORS["ink_soft"]};
+    border: 1px solid {COLORS["line"]};
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 13px;
+    font-weight: 600;
+}}
+QPushButton#secondaryButton:hover {{
+    background-color: {COLORS["accent_soft"]};
+    border-color: {COLORS["accent"]};
+    color: {COLORS["accent_hover"]};
+}}
+QPushButton#textButton {{
+    background-color: transparent;
+    color: {COLORS["muted"]};
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}}
+QPushButton#textButton:hover {{
+    color: {COLORS["danger"]};
+    background-color: {COLORS["danger_soft"]};
 }}
 QPushButton#mutedButton {{
-    background-color: #444444;
+    background-color: transparent;
+    color: {COLORS["ink_soft"]};
+    border: 1px solid {COLORS["line"]};
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 600;
 }}
 QPushButton#mutedButton:hover {{
-    background-color: #555555;
+    background-color: {COLORS["accent_soft"]};
 }}
 QLineEdit {{
-    background-color: {COLORS["entry_bg"]};
-    color: {COLORS["text"]};
-    border: 1px solid {COLORS["entry_border"]};
-    border-radius: 8px;
-    padding: 10px;
-    font-size: 16px;
-    selection-background-color: {COLORS["header"]};
+    background-color: {COLORS["field"]};
+    color: {COLORS["ink"]};
+    border: 1px solid {COLORS["field_border"]};
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 6px;
+    selection-background-color: {COLORS["accent"]};
+    selection-color: {COLORS["white"]};
+}}
+QLineEdit:focus {{
+    border: 1px solid {COLORS["accent"]};
 }}
 QMessageBox {{
-    background-color: {COLORS["bg"]};
+    background-color: {COLORS["bg_bottom"]};
 }}
 """
+
+
+def _ui_font(size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    font = QFont()
+    if IS_MACOS:
+        font.setFamilies(["Avenir Next", "Avenir", "Gill Sans"])
+    elif IS_WINDOWS:
+        font.setFamilies(["Bahnschrift", "Segoe UI Variable Display", "Candara"])
+    else:
+        font.setFamilies(["IBM Plex Sans", "Noto Sans", "DejaVu Sans"])
+    font.setPixelSize(size)
+    font.setWeight(weight)
+    return font
+
+
+class AtmosphereWidget(QWidget):
+    """Soft cool gradient shell — brand atmosphere without flat fill."""
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0.0, QColor(COLORS["bg_top"]))
+        gradient.setColorAt(0.45, QColor("#F1F6FA"))
+        gradient.setColorAt(1.0, QColor(COLORS["bg_bottom"]))
+        painter.fillRect(self.rect(), gradient)
+
+        # Quiet top band echoing the logo cyan (not a glow blob).
+        band = QLinearGradient(0, 0, self.width(), 0)
+        band.setColorAt(0.0, QColor(14, 142, 200, 0))
+        band.setColorAt(0.5, QColor(14, 142, 200, 28))
+        band.setColorAt(1.0, QColor(14, 142, 200, 0))
+        painter.fillRect(0, 0, self.width(), 120, band)
+
 
 _app_state = {
     "app": None,
@@ -128,12 +259,12 @@ _app_state = {
 
 
 def _fallback_tray_pixmap(size: int = 64) -> QPixmap:
-    """Simple black-on-transparent mark so the tray is never given a null icon."""
+    """Simple mark so the tray is never given a null icon."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(0, 0, 0))
+    pen = QPen(QColor(14, 142, 200))
     pen.setWidth(max(2, size // 16))
     painter.setPen(pen)
     margin = size // 8
@@ -141,6 +272,20 @@ def _fallback_tray_pixmap(size: int = 64) -> QPixmap:
     painter.drawEllipse(size // 4, size // 4, size // 2, size // 2)
     painter.end()
     return pix
+
+
+def _logo_pixmap(size: int = 96) -> QPixmap:
+    for path in (ICON_PATH_PNG, ICON_PATH_ICO):
+        if path and os.path.exists(path):
+            pix = QPixmap(path)
+            if not pix.isNull():
+                return pix.scaled(
+                    size,
+                    size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+    return _fallback_tray_pixmap(size)
 
 
 def _app_icon() -> QIcon:
@@ -171,7 +316,6 @@ def _tray_icon() -> QIcon:
 def ensure_app() -> QApplication:
     app = QApplication.instance()
     if app is None:
-        # High-DPI friendly defaults
         QApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
@@ -181,8 +325,7 @@ def ensure_app() -> QApplication:
         app.setOrganizationName("AmpliFiTeleport")
         app.setWindowIcon(_app_icon())
         app.setStyleSheet(APP_STYLESHEET)
-        # Prefer a cross-platform font that Qt maps well on Win/Mac
-        app.setFont(QFont("Segoe UI" if IS_WINDOWS else "Helvetica Neue", 13))
+        app.setFont(_ui_font(13))
     _app_state["app"] = app
     return app
 
@@ -190,36 +333,60 @@ def ensure_app() -> QApplication:
 class PinDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Teleport PIN Entry")
+        self.setWindowTitle("Teleport PIN")
         self.setModal(True)
-        self.setFixedSize(350, 200)
+        self.setFixedSize(380, 340)
         self.setWindowIcon(_app_icon())
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        root = AtmosphereWidget(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(root)
+
+        layout = QVBoxLayout(root)
+        root.setObjectName("pinRoot")
+        layout.setContentsMargins(28, 28, 28, 24)
         layout.setSpacing(12)
+
+        logo = QLabel()
+        logo.setPixmap(_logo_pixmap(56))
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(logo)
 
         title = QLabel("Enter Teleport PIN")
         title.setObjectName("dialogTitle")
+        title.setFont(_ui_font(18, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
+
+        hint = QLabel("Five characters from the AmpliFi mobile app")
+        hint.setObjectName("dialogHint")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(hint)
+        layout.addSpacing(6)
 
         self.pin_entry = QLineEdit()
         self.pin_entry.setMaxLength(5)
         self.pin_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pin_entry.setPlaceholderText("•••••")
+        self.pin_entry.setFont(_ui_font(22, QFont.Weight.DemiBold))
         layout.addWidget(self.pin_entry)
 
         self.error_label = QLabel("")
-        self.error_label.setStyleSheet("color: #ff5555;")
+        self.error_label.setObjectName("errorLabel")
         self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.error_label)
+        layout.addStretch(1)
 
         buttons = QHBoxLayout()
+        buttons.setSpacing(10)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setObjectName("mutedButton")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(self.reject)
-        submit_btn = QPushButton("Submit")
+        submit_btn = QPushButton("Connect")
+        submit_btn.setObjectName("primaryButton")
+        submit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         submit_btn.clicked.connect(self._submit)
         buttons.addWidget(cancel_btn)
         buttons.addWidget(submit_btn)
@@ -244,54 +411,93 @@ class PinDialog(QDialog):
 class ControlWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AmpliFi Teleport for Desktop")
-        self.setFixedSize(350, 340)
+        self.setWindowTitle("AmpliFi Teleport")
+        self.setFixedSize(400, 520)
         self.setWindowIcon(_app_icon())
 
-        central = QWidget()
-        central.setObjectName("central")
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
+        shell = AtmosphereWidget()
+        self.setCentralWidget(shell)
+
+        root = QVBoxLayout(shell)
+        root.setContentsMargins(28, 32, 28, 20)
         root.setSpacing(0)
 
-        header = QFrame()
-        header.setObjectName("headerBar")
-        header.setFixedHeight(52)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("AmpliFi Teleport for Desktop")
-        title.setObjectName("headerTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(title)
-        root.addWidget(header)
+        # Brand block — logo is the hero signal
+        self.logo_label = QLabel()
+        self.logo_label.setPixmap(_logo_pixmap(88))
+        self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.logo_label)
+        root.addSpacing(14)
 
-        body = QWidget()
-        self.body_layout = QVBoxLayout(body)
-        self.body_layout.setContentsMargins(24, 16, 24, 8)
+        brand = QLabel("AmpliFi Teleport")
+        brand.setObjectName("brandTitle")
+        brand.setFont(_ui_font(26, QFont.Weight.Bold))
+        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(brand)
+
+        subtitle = QLabel("Secure home network access")
+        subtitle.setObjectName("brandSubtitle")
+        subtitle.setFont(_ui_font(13, QFont.Weight.Medium))
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(subtitle)
+        root.addSpacing(22)
+
+        # Status row
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        status_row.addStretch(1)
+        self.status_dot = QLabel("●")
+        self.status_dot.setFont(_ui_font(12))
+        self.status_label = QLabel("Checking…")
+        self.status_label.setObjectName("statusLabel")
+        self.status_label.setFont(_ui_font(13, QFont.Weight.DemiBold))
+        status_row.addWidget(self.status_dot)
+        status_row.addWidget(self.status_label)
+        status_row.addStretch(1)
+        root.addLayout(status_row)
+        root.addSpacing(22)
+
+        # Actions
+        self.actions_host = QWidget()
+        self.actions_host.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.body_layout = QVBoxLayout(self.actions_host)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
         self.body_layout.setSpacing(10)
-        self.body_layout.addStretch(1)
-        root.addWidget(body, stretch=1)
+        root.addWidget(self.actions_host, stretch=1)
 
+        root.addSpacing(8)
         version = QLabel("Version 1.0.0")
         version.setObjectName("versionLabel")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(version)
-        root.addSpacing(8)
 
         self._busy = False
+        self._logo_effect = QGraphicsOpacityEffect(self.logo_label)
+        self.logo_label.setGraphicsEffect(self._logo_effect)
+        self._logo_anim = QPropertyAnimation(self._logo_effect, b"opacity", self)
+        self._logo_anim.setDuration(450)
+        self._logo_anim.setStartValue(0.35)
+        self._logo_anim.setEndValue(1.0)
+        self._logo_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
         self.refresh_buttons()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._logo_anim.stop()
+        self._logo_effect.setOpacity(0.35)
+        self._logo_anim.start()
 
     def closeEvent(self, event):
         # Hide to tray instead of quitting
         event.ignore()
         self.hide()
         if IS_MACOS:
-            # Restore menu-bar-only mode (no Dock) after the window is gone.
             try:
                 from macos_tray import hide_dock_icon
 
-                # Defer so hide() finishes first.
                 QTimer.singleShot(0, hide_dock_icon)
             except Exception:
                 logger.exception("Failed to restore Accessory policy on hide")
@@ -301,7 +507,6 @@ class ControlWindow(QMainWindow):
             try:
                 from macos_tray import present_app
 
-                # Accessory apps cannot reliably activate hidden windows.
                 present_app()
             except Exception:
                 logger.exception("Failed to present macOS app for window show")
@@ -328,36 +533,54 @@ class ControlWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
 
+    def _set_status(self, active: bool):
+        if active:
+            self.status_dot.setStyleSheet(f"color: {COLORS['connected']};")
+            self.status_label.setText("Connected to home network")
+            self.status_label.setStyleSheet(f"color: {COLORS['connected']};")
+        else:
+            self.status_dot.setStyleSheet(f"color: {COLORS['disconnected']};")
+            self.status_label.setText("Not connected")
+            self.status_label.setStyleSheet(f"color: {COLORS['ink_soft']};")
+
     def refresh_buttons(self):
         self._clear_body()
+        active = is_tunnel_active(retries=1, delay=0)
+        self._set_status(active)
+
         self.body_layout.addStretch(1)
 
-        active = is_tunnel_active(retries=1, delay=0)
-
         if not active:
-            self._add_action_button("Connect", self._on_connect)
+            primary = self._add_action_button(
+                "Connect", self._on_connect, "primaryButton"
+            )
         else:
-            self._add_action_button("Disconnect", self._on_disconnect)
+            primary = self._add_action_button(
+                "Disconnect", self._on_disconnect, "disconnectButton"
+            )
+        primary.setFont(_ui_font(15, QFont.Weight.Bold))
 
         if (
             os.path.exists(TOKEN_FILE)
             or os.path.exists(UUID_FILE)
             or os.path.exists(CONFIG_PATH)
         ):
-            self._add_action_button(
-                "Delete Existing Configuration", self._on_delete_config
+            secondary = self._add_action_button(
+                "Delete saved configuration",
+                self._on_delete_config,
+                "secondaryButton",
             )
+            secondary.setFont(_ui_font(13, QFont.Weight.DemiBold))
 
-        quit_btn = self._add_action_button("Quit", self._on_quit)
-        quit_btn.setObjectName("dangerButton")
-        # Re-apply stylesheet object name styles
-        quit_btn.style().unpolish(quit_btn)
-        quit_btn.style().polish(quit_btn)
+        self.body_layout.addSpacing(6)
+        quit_btn = self._add_action_button("Quit AmpliFi Teleport", self._on_quit, "textButton")
+        quit_btn.setFont(_ui_font(12, QFont.Weight.DemiBold))
 
         self.body_layout.addStretch(1)
 
-    def _add_action_button(self, text: str, slot) -> QPushButton:
+    def _add_action_button(self, text: str, slot, object_name: str) -> QPushButton:
         btn = QPushButton(text)
+        btn.setObjectName(object_name)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(slot)
         self.body_layout.addWidget(btn)
@@ -369,6 +592,10 @@ class ControlWindow(QMainWindow):
             widget = self.body_layout.itemAt(i).widget()
             if isinstance(widget, QPushButton):
                 widget.setEnabled(not busy)
+        if busy:
+            self.status_label.setText("Working…")
+            self.status_label.setStyleSheet(f"color: {COLORS['accent']};")
+            self.status_dot.setStyleSheet(f"color: {COLORS['accent']};")
 
     def _after_action_refresh(self):
         self._set_busy(False)
