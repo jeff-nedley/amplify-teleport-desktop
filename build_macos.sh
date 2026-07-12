@@ -113,7 +113,6 @@ pyinstaller --noconfirm --clean --windowed \
   --hidden-import objc \
   --hidden-import AppKit \
   --hidden-import Foundation \
-  --hidden-import UserNotifications \
   --hidden-import PyObjCTools \
   --hidden-import PySide6.QtCore \
   --hidden-import PySide6.QtGui \

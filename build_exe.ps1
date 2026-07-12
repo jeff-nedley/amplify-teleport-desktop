@@ -92,7 +92,6 @@ pyinstaller --onefile --windowed `
   --hidden-import PySide6.QtGui `
   --hidden-import PySide6.QtWidgets `
   --collect-all PySide6 `
-  --hidden-import plyer.platforms.win.notification `
   main.py
 
 $exePath = Join-Path $Root "dist\AmpliFi Teleport for Desktop.exe"
