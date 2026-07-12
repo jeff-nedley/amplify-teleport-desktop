@@ -74,26 +74,35 @@ def _helper_icon_path() -> Optional[str]:
 
 
 def _helper_pids() -> list[int]:
-    """PIDs of running AmpliFi menu-bar helper processes."""
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", "macos_menubar_helper.py"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except Exception:
-        return []
-    pids: list[int] = []
-    for line in (result.stdout or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    """PIDs of running AmpliFi menu-bar helper processes (source or frozen)."""
+    patterns = (
+        "macos_menubar_helper.py",
+        "menubar-helper",
+    )
+    pids: set[int] = set()
+    for pattern in patterns:
         try:
-            pids.append(int(line))
-        except ValueError:
+            result = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except Exception:
             continue
-    return pids
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                pid = int(line)
+            except ValueError:
+                continue
+            # Never treat this process as a helper to kill.
+            if pid == os.getpid():
+                continue
+            pids.add(pid)
+    return sorted(pids)
 
 
 def kill_all_menubar_helpers(*, exclude_pid: Optional[int] = None) -> None:
@@ -105,7 +114,7 @@ def kill_all_menubar_helpers(*, exclude_pid: Optional[int] = None) -> None:
 
 
 def _force_kill_pid(pid: int) -> None:
-    if pid <= 0:
+    if pid <= 0 or pid == os.getpid():
         return
     try:
         os.kill(pid, 0)
@@ -161,23 +170,45 @@ class MenuBarHelper:
             return self._proc.pid
         return self._pid
 
+    def _helper_command(self) -> list[str]:
+        """
+        Build the helper argv.
+
+        Frozen PyInstaller apps cannot re-exec a different .py file via
+        sys.executable — that relaunches the full UI endlessly. Use an argv
+        mode handled in main.py instead.
+        """
+        env_icon = self._icon_path if self._icon_path and os.path.exists(self._icon_path) else None
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--menubar-helper"]
+            if env_icon:
+                cmd.extend(["--icon", env_icon])
+            return cmd
+
+        script = _helper_script_path()
+        cmd = [sys.executable, "-u", script]
+        if env_icon:
+            cmd.append(env_icon)
+        return cmd
+
     def start(self) -> bool:
         if self.is_running:
             return True
 
-        script = _helper_script_path()
-        if not os.path.exists(script):
-            logger.error("Menu bar helper script missing: %s", script)
-            return False
+        if not getattr(sys, "frozen", False):
+            script = _helper_script_path()
+            if not os.path.exists(script):
+                logger.error("Menu bar helper script missing: %s", script)
+                return False
 
         # Clear orphans from previous runs so icons cannot accumulate.
         kill_all_menubar_helpers()
 
-        cmd = [sys.executable, "-u", script]
+        cmd = self._helper_command()
         env = os.environ.copy()
         env["AMPLIFI_PARENT_PID"] = str(os.getpid())
+        env["AMPLIFI_MENUBAR_HELPER"] = "1"
         if self._icon_path and os.path.exists(self._icon_path):
-            cmd.append(self._icon_path)
             env["AMPLIFI_TRAY_ICON"] = self._icon_path
 
         try:
@@ -206,9 +237,9 @@ class MenuBarHelper:
         )
         self._thread.start()
         logger.info(
-            "Started macOS menu bar helper pid=%s icon=%s parent=%s",
+            "Started macOS menu bar helper pid=%s cmd=%s parent=%s",
             self._proc.pid,
-            self._icon_path,
+            cmd,
             os.getpid(),
         )
         return True

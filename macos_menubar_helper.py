@@ -87,13 +87,28 @@ def _shutdown_status_item() -> None:
 
 
 def _icon_path() -> str | None:
-    if len(sys.argv) > 1 and sys.argv[1].strip():
-        candidate = sys.argv[1].strip()
+    # Allow: --icon /path/to.png (frozen helper argv)
+    args = sys.argv[1:]
+    index = 0
+    while index < len(args):
+        if args[index] == "--icon" and index + 1 < len(args):
+            candidate = args[index + 1]
+            if candidate and os.path.exists(candidate):
+                return candidate
+            index += 2
+            continue
+        index += 1
+
+    positional = [a for a in args if a and not a.startswith("-")]
+    if positional:
+        candidate = positional[0].strip()
         if os.path.exists(candidate):
             return candidate
+
     env = os.environ.get("AMPLIFI_TRAY_ICON", "").strip()
     if env and os.path.exists(env):
         return env
+
     here = os.path.dirname(os.path.abspath(__file__))
     for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
         path = os.path.join(here, name)

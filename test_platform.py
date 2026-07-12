@@ -88,6 +88,30 @@ class PlatformUtilsTests(unittest.TestCase):
                 self.assertIsNone(tunnel._read_config_value("Missing"))
 
 
+class MenuBarHelperLaunchTests(unittest.TestCase):
+    def test_frozen_helper_uses_argv_mode_not_script(self):
+        import macos_tray as mt
+
+        helper = mt.MenuBarHelper(on_open=lambda: None, on_quit=lambda: None, icon_path=None)
+        with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(
+            sys, "executable", "/Apps/AmpliFi.app/Contents/MacOS/AmpliFi"
+        ):
+            cmd = helper._helper_command()
+        self.assertEqual(cmd[0], "/Apps/AmpliFi.app/Contents/MacOS/AmpliFi")
+        self.assertIn("--menubar-helper", cmd)
+        self.assertTrue(all(not part.endswith("macos_menubar_helper.py") for part in cmd))
+
+    def test_source_helper_uses_script(self):
+        import macos_tray as mt
+
+        helper = mt.MenuBarHelper(on_open=lambda: None, on_quit=lambda: None, icon_path=None)
+        with mock.patch.object(sys, "frozen", False, create=True), mock.patch.object(
+            mt, "_helper_script_path", return_value="/tmp/macos_menubar_helper.py"
+        ):
+            cmd = helper._helper_command()
+        self.assertEqual(cmd[:3], [sys.executable, "-u", "/tmp/macos_menubar_helper.py"])
+
+
 if __name__ == "__main__":
     # Run from repo root so icon paths resolve
     os.chdir(os.path.dirname(os.path.abspath(__file__)) or ".")

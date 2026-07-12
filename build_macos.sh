@@ -94,6 +94,7 @@ pyinstaller --noconfirm --clean --windowed \
   --hidden-import tunnel \
   --hidden-import ui \
   --hidden-import macos_tray \
+  --hidden-import macos_menubar_helper \
   --hidden-import notifications \
   --hidden-import platform_utils \
   --hidden-import teleport \
