@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -72,6 +73,66 @@ def _helper_icon_path() -> Optional[str]:
     return None
 
 
+def _helper_pids() -> list[int]:
+    """PIDs of running AmpliFi menu-bar helper processes."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "macos_menubar_helper.py"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return []
+    pids: list[int] = []
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    return pids
+
+
+def kill_all_menubar_helpers(*, exclude_pid: Optional[int] = None) -> None:
+    """Force-remove any leftover menu-bar helpers (orphans from prior quits)."""
+    for pid in _helper_pids():
+        if exclude_pid is not None and pid == exclude_pid:
+            continue
+        _force_kill_pid(pid)
+
+
+def _force_kill_pid(pid: int) -> None:
+    if pid <= 0:
+        return
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return
+
+    import time
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            try:
+                os.killpg(pid, sig)
+            except Exception:
+                os.kill(pid, sig)
+        except OSError:
+            return
+        deadline = time.time() + (0.6 if sig == signal.SIGTERM else 0.3)
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                logger.info("Killed menu bar helper pid=%s with %s", pid, sig)
+                return
+            time.sleep(0.05)
+    logger.warning("Menu bar helper pid=%s may still be alive", pid)
+
+
 class MenuBarHelper:
     """Owns the separate menu-bar helper process."""
 
@@ -88,6 +149,7 @@ class MenuBarHelper:
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._stopping = False
+        self._pid: Optional[int] = None
 
     @property
     def is_running(self) -> bool:
@@ -95,8 +157,9 @@ class MenuBarHelper:
 
     @property
     def pid(self) -> Optional[int]:
-        proc = self._proc
-        return proc.pid if proc is not None and proc.poll() is None else None
+        if self._proc is not None and self._proc.poll() is None:
+            return self._proc.pid
+        return self._pid
 
     def start(self) -> bool:
         if self.is_running:
@@ -107,8 +170,12 @@ class MenuBarHelper:
             logger.error("Menu bar helper script missing: %s", script)
             return False
 
+        # Clear orphans from previous runs so icons cannot accumulate.
+        kill_all_menubar_helpers()
+
         cmd = [sys.executable, "-u", script]
         env = os.environ.copy()
+        env["AMPLIFI_PARENT_PID"] = str(os.getpid())
         if self._icon_path and os.path.exists(self._icon_path):
             cmd.append(self._icon_path)
             env["AMPLIFI_TRAY_ICON"] = self._icon_path
@@ -128,8 +195,10 @@ class MenuBarHelper:
         except Exception:
             logger.exception("Failed to launch menu bar helper")
             self._proc = None
+            self._pid = None
             return False
 
+        self._pid = self._proc.pid
         self._thread = threading.Thread(
             target=self._read_loop,
             name="amplifi-menubar-helper",
@@ -137,65 +206,37 @@ class MenuBarHelper:
         )
         self._thread.start()
         logger.info(
-            "Started macOS menu bar helper pid=%s icon=%s",
+            "Started macOS menu bar helper pid=%s icon=%s parent=%s",
             self._proc.pid,
             self._icon_path,
+            os.getpid(),
         )
         return True
 
     def stop(self) -> None:
         """Ask the helper to remove its status item, then ensure the process is gone."""
-        import signal
-
         self._stopping = True
         proc = self._proc
+        pid = self._pid or (proc.pid if proc is not None else None)
         self._proc = None
-        if proc is None:
-            return
 
-        pid = proc.pid
-        try:
-            if proc.poll() is None and proc.stdin is not None:
-                try:
-                    proc.stdin.write("EXIT\n")
-                    proc.stdin.flush()
-                    proc.stdin.close()
-                except Exception:
-                    logger.debug("Could not send EXIT to menu bar helper", exc_info=True)
-                try:
-                    proc.wait(timeout=1.5)
-                except subprocess.TimeoutExpired:
-                    pass
+        if proc is not None and proc.poll() is None and proc.stdin is not None:
+            try:
+                proc.stdin.write("EXIT\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+            except Exception:
+                logger.debug("Could not send EXIT to menu bar helper", exc_info=True)
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
 
-            if proc.poll() is None:
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except Exception:
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
-                try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    pass
-
-            if proc.poll() is None:
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    logger.warning("Menu bar helper pid=%s did not exit after SIGKILL", pid)
-            else:
-                logger.info("Stopped macOS menu bar helper pid=%s", pid)
-        except Exception:
-            logger.exception("Failed to stop menu bar helper")
+        if pid is not None:
+            _force_kill_pid(pid)
+        # Belt-and-suspenders: sweep any helpers still matching the script name.
+        kill_all_menubar_helpers()
+        self._pid = None
 
     def hide(self) -> None:
         self.stop()

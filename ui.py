@@ -988,23 +988,30 @@ def show_control_window():
 def _stop_tray():
     """Tear down tray / menu-bar helper so the icon cannot outlive the app."""
     tray = _app_state.pop("tray", None)
-    if tray is None:
-        return
-    try:
-        if hasattr(tray, "stop"):
-            tray.stop()
-        else:
-            # QSystemTrayIcon
-            try:
-                tray.setVisible(False)
-            except Exception:
-                pass
-            try:
-                tray.hide()
-            except Exception:
-                pass
-    except Exception:
-        logger.exception("Failed to tear down tray / menu bar helper")
+    if tray is not None:
+        try:
+            if hasattr(tray, "stop"):
+                tray.stop()
+            else:
+                # QSystemTrayIcon
+                try:
+                    tray.setVisible(False)
+                except Exception:
+                    pass
+                try:
+                    tray.hide()
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("Failed to tear down tray / menu bar helper")
+
+    if IS_MACOS:
+        try:
+            from macos_tray import kill_all_menubar_helpers
+
+            kill_all_menubar_helpers()
+        except Exception:
+            logger.debug("Menu bar helper sweep failed", exc_info=True)
 
 
 def quit_application(skip_deactivate: bool = False):
@@ -1045,13 +1052,14 @@ def quit_application(skip_deactivate: bool = False):
         app = _app_state.get("app") or QApplication.instance()
         if app is not None:
             app.quit()
-        threading.Timer(10.0, lambda: os._exit(0)).start()
+        threading.Timer(10.0, lambda: (_stop_tray(), os._exit(0))).start()
         return
 
     app = _app_state.get("app") or QApplication.instance()
     if app is not None:
         app.quit()
-    threading.Timer(0.25, lambda: os._exit(0)).start()
+    # Final sweep right before hard-exit in case a helper respawned/raced.
+    threading.Timer(0.15, lambda: (_stop_tray(), os._exit(0))).start()
 
 
 def ask_pin(parent=None) -> str | None:

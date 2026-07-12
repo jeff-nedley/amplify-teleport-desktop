@@ -8,7 +8,10 @@ destroy the status item. Prints commands to stdout:
   OPEN  — user chose Open Controls
   QUIT  — user chose Quit
 
-Parent may write EXIT to stdin to tear down the status item and exit.
+Lifetime is paired to the parent app:
+  - EXIT on stdin, or stdin EOF
+  - AMPLIFI_PARENT_PID disappearing (poll on the Cocoa run loop)
+  - SIGTERM / SIGINT
 
 Optional argv[1] / AMPLIFI_TRAY_ICON: path to the app icon (PNG/ICNS).
 """
@@ -16,6 +19,7 @@ Optional argv[1] / AMPLIFI_TRAY_ICON: path to the app icon (PNG/ICNS).
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import threading
 
@@ -29,11 +33,13 @@ from AppKit import (
     NSStatusBar,
     NSVariableStatusItemLength,
 )
-from Foundation import NSObject
+from Foundation import NSObject, NSTimer
 from PyObjCTools import AppHelper
 
 _RETAINED: list[object] = []
 _STATUS_ITEM = None
+_SHUTTING_DOWN = False
+_PARENT_PID = 0
 
 
 class HelperDelegate(NSObject):
@@ -44,18 +50,40 @@ class HelperDelegate(NSObject):
         print("QUIT", flush=True)
         _shutdown_status_item()
 
+    def checkParent_(self, _timer):  # noqa: N802
+        """Cocoa-main-thread watchdog: exit if the Qt parent is gone."""
+        if _SHUTTING_DOWN:
+            return
+        if _PARENT_PID <= 0:
+            return
+        try:
+            os.kill(_PARENT_PID, 0)
+        except OSError:
+            print("PARENT_GONE", flush=True)
+            _shutdown_status_item()
+
 
 def _shutdown_status_item() -> None:
     """Remove the menu-bar item, then stop the Cocoa run loop."""
-    global _STATUS_ITEM
+    global _STATUS_ITEM, _SHUTTING_DOWN
+    if _SHUTTING_DOWN:
+        return
+    _SHUTTING_DOWN = True
     status = _STATUS_ITEM
     _STATUS_ITEM = None
     if status is not None:
         try:
+            status.setMenu_(None)
+        except Exception:
+            pass
+        try:
             NSStatusBar.systemStatusBar().removeStatusItem_(status)
         except Exception:
             pass
-    AppHelper.stopEventLoop()
+    try:
+        AppHelper.stopEventLoop()
+    except Exception:
+        pass
 
 
 def _icon_path() -> str | None:
@@ -66,7 +94,6 @@ def _icon_path() -> str | None:
     env = os.environ.get("AMPLIFI_TRAY_ICON", "").strip()
     if env and os.path.exists(env):
         return env
-    # Same-directory fallback when launched next to the icon
     here = os.path.dirname(os.path.abspath(__file__))
     for name in ("tray-icon.png", "tray-icon.icns", "tray-icon.ico"):
         path = os.path.join(here, name)
@@ -80,7 +107,6 @@ def _load_menu_bar_image(path: str) -> object | None:
     if image is None:
         print(f"ERROR icon_load_failed {path}", flush=True)
         return None
-    # Menu bar extras are ~18pt; keep full-color app artwork (not a template).
     image.setSize_((18.0, 18.0))
     image.setTemplate_(False)
     _RETAINED.append(image)
@@ -88,21 +114,36 @@ def _load_menu_bar_image(path: str) -> object | None:
 
 
 def _watch_parent_stdin() -> None:
-    """Exit when the parent closes stdin or sends EXIT (app quit / crash teardown)."""
+    """Exit when the parent sends EXIT or closes stdin."""
     try:
         for raw in sys.stdin:
             if (raw or "").strip().upper() == "EXIT":
                 break
-        else:
-            # EOF — parent process went away
-            pass
     except Exception:
         pass
     AppHelper.callAfter(_shutdown_status_item)
 
 
+def _install_signal_handlers() -> None:
+    def _handler(_signum, _frame):
+        AppHelper.callAfter(_shutdown_status_item)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(sig, _handler)
+        except Exception:
+            pass
+
+
 def main() -> int:
-    global _STATUS_ITEM
+    global _STATUS_ITEM, _PARENT_PID
+
+    try:
+        _PARENT_PID = int(os.environ.get("AMPLIFI_PARENT_PID", "0") or "0")
+    except ValueError:
+        _PARENT_PID = 0
+
+    _install_signal_handlers()
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -133,7 +174,6 @@ def main() -> int:
         button.setTitle_("")
         print(f"ICON {icon_path}", flush=True)
     else:
-        # Last-resort visible glyph if the asset is missing
         button.setTitle_("AT")
         print("WARN no_icon_using_title", flush=True)
 
@@ -152,14 +192,22 @@ def main() -> int:
     _RETAINED.append(menu)
     status.setMenu_(menu)
 
-    # Pair lifetime to the parent app: EXIT command or stdin EOF tears us down.
     watcher = threading.Thread(
         target=_watch_parent_stdin, name="amplifi-menubar-stdin", daemon=True
     )
     watcher.start()
 
+    # Poll parent liveness on the Cocoa main thread (reliable vs background callAfter).
+    if _PARENT_PID > 0:
+        timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.4, delegate, "checkParent:", None, True
+        )
+        _RETAINED.append(timer)
+        print(f"PARENT {_PARENT_PID}", flush=True)
+
     print("READY", flush=True)
     AppHelper.runEventLoop()
+    _shutdown_status_item()
     return 0
 
 
