@@ -776,7 +776,7 @@ class ControlWindow(QMainWindow):
             return True, "Configuration Deleted"
 
         self._run_in_background(
-            "Working…",
+            "Deleting configuration…",
             work,
             success_toast=("Config Update", "Existing configuration deleted!"),
         )
