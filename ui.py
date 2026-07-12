@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     QObject,
     QPropertyAnimation,
     Qt,
+    QThread,
     QTimer,
     Signal,
 )
@@ -430,6 +431,28 @@ class PinDialog(QDialog):
         return None
 
 
+class TunnelWorker(QThread):
+    """Run blocking tunnel / config work off the Qt UI thread."""
+
+    finished_with_result = Signal(bool, str)
+
+    def __init__(self, work_fn, parent=None):
+        super().__init__(parent)
+        self._work_fn = work_fn
+
+    def run(self):
+        try:
+            result = self._work_fn()
+            if isinstance(result, tuple) and len(result) >= 2:
+                ok, msg = result[0], result[1]
+            else:
+                ok, msg = bool(result), ""
+            self.finished_with_result.emit(bool(ok), str(msg or ""))
+        except Exception as e:
+            logger.exception("Background tunnel operation failed")
+            self.finished_with_result.emit(False, str(e))
+
+
 class ControlWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -497,6 +520,12 @@ class ControlWindow(QMainWindow):
         root.addWidget(version)
 
         self._busy = False
+        self._worker: TunnelWorker | None = None
+        self._busy_pulse_on = True
+        self._busy_pulse = QTimer(self)
+        self._busy_pulse.setInterval(450)
+        self._busy_pulse.timeout.connect(self._pulse_busy_indicator)
+
         self._logo_effect = QGraphicsOpacityEffect(self.logo_label)
         self.logo_label.setGraphicsEffect(self._logo_effect)
         self._logo_anim = QPropertyAnimation(self._logo_effect, b"opacity", self)
@@ -546,7 +575,8 @@ class ControlWindow(QMainWindow):
             app.setActiveWindow(self)
             app.setWindowIcon(_app_icon())
         self.setWindowIcon(_app_icon())
-        self.refresh_buttons()
+        if not self._busy:
+            self.refresh_buttons()
         logger.info("Control window shown/raised (visible=%s)", self.isVisible())
 
     def _clear_body(self):
@@ -567,6 +597,9 @@ class ControlWindow(QMainWindow):
             self.status_label.setStyleSheet(f"color: {COLORS['ink_soft']};")
 
     def refresh_buttons(self):
+        if self._busy:
+            return
+
         self._clear_body()
         active = is_tunnel_active(retries=1, delay=0)
         self._set_status(active)
@@ -609,55 +642,172 @@ class ControlWindow(QMainWindow):
         self.body_layout.addWidget(btn)
         return btn
 
-    def _set_busy(self, busy: bool):
+    def _pulse_busy_indicator(self):
+        if not self._busy:
+            return
+        self._busy_pulse_on = not self._busy_pulse_on
+        opacity = "1.0" if self._busy_pulse_on else "0.35"
+        self.status_dot.setStyleSheet(
+            f"color: {COLORS['accent']}; opacity: {opacity};"
+        )
+
+    def _set_busy(self, busy: bool, text: str = "Working…"):
         self._busy = busy
-        for i in range(self.body_layout.count()):
-            widget = self.body_layout.itemAt(i).widget()
-            if isinstance(widget, QPushButton):
-                widget.setEnabled(not busy)
         if busy:
-            self.status_label.setText("Working…")
+            self._clear_body()
+            self.status_label.setText(text)
             self.status_label.setStyleSheet(f"color: {COLORS['accent']};")
             self.status_dot.setStyleSheet(f"color: {COLORS['accent']};")
+            self._busy_pulse_on = True
+            self._busy_pulse.start()
 
-    def _after_action_refresh(self):
-        self._set_busy(False)
-        self.refresh_buttons()
+            self.body_layout.addStretch(1)
+            working = QLabel(text)
+            working.setObjectName("brandSubtitle")
+            working.setFont(_ui_font(15, QFont.Weight.DemiBold))
+            working.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            working.setStyleSheet(f"color: {COLORS['accent']};")
+            self.body_layout.addWidget(working)
+            hint = QLabel("Please wait — this can take a few seconds")
+            hint.setObjectName("versionLabel")
+            hint.setFont(_ui_font(12))
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.body_layout.addSpacing(8)
+            self.body_layout.addWidget(hint)
+            self.body_layout.addStretch(1)
+        else:
+            self._busy_pulse.stop()
+
+    def _run_in_background(
+        self,
+        status_text: str,
+        work_fn,
+        *,
+        success_toast: tuple[str, str] | None = None,
+        show_error_toast: bool = True,
+        on_finished=None,
+    ):
+        """Run blocking tunnel work off the UI thread so status text can paint."""
+        if self._busy or (self._worker is not None and self._worker.isRunning()):
+            return
+
+        self._set_busy(True, status_text)
+        worker = TunnelWorker(work_fn, self)
+        self._worker = worker
+
+        def _done(ok: bool, msg: str):
+            worker.finished_with_result.disconnect(_done)
+            self._set_busy(False)
+            if self._worker is worker:
+                self._worker = None
+            worker.deleteLater()
+
+            if on_finished is not None:
+                on_finished(ok, msg)
+                return
+
+            if ok and success_toast is not None:
+                show_toast(success_toast[0], success_toast[1])
+            elif not ok and show_error_toast and msg:
+                show_toast("Error", msg)
+            if not ok and msg:
+                logger.info("Background op result: %s", msg)
+            self.refresh_buttons()
+
+        worker.finished_with_result.connect(_done)
+        worker.start()
 
     def _on_connect(self):
         if self._busy:
             return
-        self._set_busy(True)
-        QApplication.processEvents()
-        try:
-            ok, msg = on_connect()
-            if not ok and msg:
-                logger.info("Connect result: %s", msg)
-        finally:
-            QTimer.singleShot(1200, self._after_action_refresh)
+
+        if not os.path.exists(TOKEN_FILE):
+            pin = ask_pin(self)
+            if not pin:
+                return
+
+            def work():
+                ok, msg = generate_config(pin)
+                if not ok:
+                    return False, msg
+                return activate_tunnel()
+
+            self._run_in_background(
+                "Connecting…",
+                work,
+                success_toast=("Status Update", "Teleport connected!"),
+            )
+            return
+
+        def work():
+            ok, msg = generate_config(pin=None)
+            if not ok:
+                return False, msg
+            return activate_tunnel()
+
+        self._run_in_background(
+            "Connecting…",
+            work,
+            success_toast=("Status Update", "Teleport connected!"),
+        )
 
     def _on_disconnect(self):
         if self._busy:
             return
-        self._set_busy(True)
-        QApplication.processEvents()
-        try:
-            on_disconnect()
-        finally:
-            QTimer.singleShot(1200, self._after_action_refresh)
+        if not is_tunnel_active():
+            show_toast("Error", "No Teleport Tunnel is active")
+            self.refresh_buttons()
+            return
+
+        self._run_in_background(
+            "Disconnecting…",
+            deactivate_tunnel,
+            success_toast=("Status Update", "Teleport disconnected!"),
+        )
 
     def _on_delete_config(self):
         if self._busy:
             return
-        self._set_busy(True)
-        QApplication.processEvents()
-        try:
-            on_delete_config(parent=self)
-        finally:
-            QTimer.singleShot(800, self._after_action_refresh)
+        if not confirm_delete(parent=self):
+            return
+
+        def work():
+            logger.debug("Disregard following deactivation error if any")
+            try:
+                deactivate_tunnel()
+            except Exception:
+                logger.exception("Deactivate during delete (ignored)")
+            for path in (TOKEN_FILE, UUID_FILE, CONFIG_PATH):
+                if os.path.exists(path):
+                    os.remove(path)
+            return True, "Configuration Deleted"
+
+        self._run_in_background(
+            "Working…",
+            work,
+            success_toast=("Config Update", "Existing configuration deleted!"),
+        )
 
     def _on_quit(self):
-        quit_application()
+        if self._busy:
+            return
+
+        def work():
+            try:
+                return deactivate_tunnel()
+            except Exception as e:
+                logger.exception("Error while disconnecting tunnel during quit")
+                return False, str(e)
+
+        def after(_ok, _msg):
+            quit_application(skip_deactivate=True)
+
+        self._run_in_background(
+            "Disconnecting…",
+            work,
+            show_error_toast=False,
+            on_finished=after,
+        )
 
 
 def create_qt_tray(window: ControlWindow) -> QSystemTrayIcon:
@@ -685,7 +835,7 @@ def create_qt_tray(window: ControlWindow) -> QSystemTrayIcon:
         window.show_and_raise()
 
     open_action.triggered.connect(_open)
-    quit_action.triggered.connect(quit_application)
+    quit_action.triggered.connect(window._on_quit)
     tray.setContextMenu(menu)
 
     tray._amplifi_menu = menu  # type: ignore[attr-defined]
@@ -729,7 +879,7 @@ def _start_macos_menubar(window: ControlWindow):
 
     bridge = _MenuBarBridge()
     bridge.open_requested.connect(window.show_and_raise)
-    bridge.quit_requested.connect(quit_application)
+    bridge.quit_requested.connect(window._on_quit)
     # Keep the bridge alive for the app lifetime.
     _app_state["menubar_bridge"] = bridge
 
@@ -815,14 +965,15 @@ def show_control_window():
     window.show_and_raise()
 
 
-def quit_application():
+def quit_application(skip_deactivate: bool = False):
     """Fully exit: tear down any active tunnel first (Windows + macOS), then quit."""
-    try:
-        logger.info("Quit requested — disconnecting tunnel if active")
-        success, msg = deactivate_tunnel()
-        logger.info("Disconnect on quit: success=%s (%s)", success, msg)
-    except Exception:
-        logger.exception("Error while disconnecting tunnel during quit")
+    if not skip_deactivate:
+        try:
+            logger.info("Quit requested — disconnecting tunnel if active")
+            success, msg = deactivate_tunnel()
+            logger.info("Disconnect on quit: success=%s (%s)", success, msg)
+        except Exception:
+            logger.exception("Error while disconnecting tunnel during quit")
 
     tray = _app_state.get("tray")
     if tray is not None:
