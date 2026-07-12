@@ -69,6 +69,7 @@ class MacInstallerParityTests(unittest.TestCase):
         self.assertIn("hdiutil", script)
         self.assertIn("postinstall", script)
         self.assertIn('VERSION="$(tr -d', script)
+        self.assertIn("clean_macos_dist", script)
 
     def test_version_is_centralized(self):
         version_path = os.path.join(ROOT, "VERSION")

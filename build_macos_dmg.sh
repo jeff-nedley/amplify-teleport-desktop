@@ -282,12 +282,35 @@ EOF
     log "DMG ready: $DMG_PATH"
 }
 
+clean_macos_dist() {
+    # Remove prior macOS release outputs so dist/ only has this build's artifacts.
+    mkdir -p "$DIST_DIR"
+    log "Cleaning previous macOS artifacts from dist/"
+    if [[ "$SKIP_APP_BUILD" -eq 0 ]]; then
+        rm -rf "${DIST_DIR}/${APP_BUNDLE}"
+    else
+        log "Keeping existing ${APP_BUNDLE} (--skip-app-build)"
+    fi
+    # Shell-nullglob equivalent: ignore "no matches" without aborting under set -u
+    local path
+    shopt -s nullglob
+    for path in \
+        "${DIST_DIR}/Amplifi Teleport For Desktop Setup-"*.dmg \
+        "${DIST_DIR}/Amplifi Teleport For Desktop Setup-"*.pkg
+    do
+        log "Removing $(basename "$path")"
+        rm -f "$path"
+    done
+    shopt -u nullglob
+}
+
 # --- main ---
 require_macos
 require_tools
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
+clean_macos_dist
 build_app
 stage_payload
 build_packages
