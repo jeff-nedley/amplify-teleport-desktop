@@ -130,6 +130,7 @@ QPushButton#primaryButton {{
     border: none;
     border-radius: 12px;
     padding: 14px 18px;
+    margin: 0 0 6px 0;
     font-size: 15px;
     font-weight: 700;
     min-height: 24px;
@@ -150,6 +151,7 @@ QPushButton#disconnectButton {{
     border: 1px solid #E5BDBD;
     border-radius: 12px;
     padding: 14px 18px;
+    margin: 0 0 6px 0;
     font-size: 15px;
     font-weight: 700;
     min-height: 24px;
@@ -164,6 +166,7 @@ QPushButton#secondaryButton {{
     border: 1px solid {COLORS["line"]};
     border-radius: 12px;
     padding: 12px 16px;
+    margin: 6px 0 0 0;
     font-size: 13px;
     font-weight: 600;
 }}
@@ -178,6 +181,7 @@ QPushButton#textButton {{
     border: none;
     border-radius: 8px;
     padding: 8px 12px;
+    margin-top: 10px;
     font-size: 12px;
     font-weight: 600;
 }}
@@ -274,18 +278,36 @@ def _fallback_tray_pixmap(size: int = 64) -> QPixmap:
     return pix
 
 
-def _logo_pixmap(size: int = 96) -> QPixmap:
-    for path in (ICON_PATH_PNG, ICON_PATH_ICO):
-        if path and os.path.exists(path):
-            pix = QPixmap(path)
-            if not pix.isNull():
-                return pix.scaled(
-                    size,
-                    size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-    return _fallback_tray_pixmap(size)
+def _logo_pixmap(logical_size: int = 96) -> QPixmap:
+    """
+    Load the app logo at device-pixel resolution so Retina/HiDPI stays sharp.
+    """
+    app = QApplication.instance()
+    dpr = float(app.devicePixelRatio() if app is not None else 2.0)
+    if dpr < 1.0:
+        dpr = 1.0
+    pixel_size = max(int(round(logical_size * dpr)), logical_size)
+
+    source = None
+    # Prefer PNG; it is a clean 256² asset. Avoid low-res ICO frames.
+    if os.path.exists(ICON_PATH_PNG):
+        source = QPixmap(ICON_PATH_PNG)
+    elif os.path.exists(ICON_PATH_ICO):
+        source = QPixmap(ICON_PATH_ICO)
+
+    if source is None or source.isNull():
+        fallback = _fallback_tray_pixmap(pixel_size)
+        fallback.setDevicePixelRatio(dpr)
+        return fallback
+
+    scaled = source.scaled(
+        pixel_size,
+        pixel_size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    scaled.setDevicePixelRatio(dpr)
+    return scaled
 
 
 def _app_icon() -> QIcon:
@@ -424,7 +446,8 @@ class ControlWindow(QMainWindow):
 
         # Brand block — logo is the hero signal
         self.logo_label = QLabel()
-        self.logo_label.setPixmap(_logo_pixmap(88))
+        self.logo_label.setPixmap(_logo_pixmap(96))
+        self.logo_label.setFixedHeight(104)
         self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self.logo_label)
         root.addSpacing(14)
@@ -464,7 +487,7 @@ class ControlWindow(QMainWindow):
         )
         self.body_layout = QVBoxLayout(self.actions_host)
         self.body_layout.setContentsMargins(0, 0, 0, 0)
-        self.body_layout.setSpacing(10)
+        self.body_layout.setSpacing(16)
         root.addWidget(self.actions_host, stretch=1)
 
         root.addSpacing(8)
@@ -572,7 +595,7 @@ class ControlWindow(QMainWindow):
             )
             secondary.setFont(_ui_font(13, QFont.Weight.DemiBold))
 
-        self.body_layout.addSpacing(6)
+        self.body_layout.addSpacing(4)
         quit_btn = self._add_action_button("Quit AmpliFi Teleport", self._on_quit, "textButton")
         quit_btn.setFont(_ui_font(12, QFont.Weight.DemiBold))
 
