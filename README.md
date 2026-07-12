@@ -97,12 +97,29 @@ brew install wireguard-tools bash
 
 ### Packaging
 
+One release entry point drives the existing platform builders (version comes from `VERSION`):
+
+```bash
+# On a Mac — Setup DMG
+./build_release.sh --macos
+
+# On Windows — Setup exe (PyInstaller + Inno Setup)
+.\build_release.ps1 -Windows
+
+# Build whatever this machine can produce
+./build_release.sh --all
+```
+
+A full dual-OS GitHub release still needs one pass on each OS (or CI runners for both).
+
+Lower-level scripts (still available):
+
 ```powershell
-# Windows — then compile app_installer_script.iss with Inno Setup
+# Windows app + installer only
 .\build_exe.ps1
 ```
 
 ```bash
-# macOS — produces the Setup DMG (includes WireGuard auto-install)
+# macOS DMG only
 ./build_macos_dmg.sh
 ```

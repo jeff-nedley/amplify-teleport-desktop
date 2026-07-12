@@ -51,6 +51,9 @@ class MacInstallerParityTests(unittest.TestCase):
         self.assertIn("WireGuardWasMissing", iss)
         self.assertIn("/qn", iss)
         self.assertIn("Do you also want to uninstall WireGuard?", iss)
+        self.assertIn("OutputDir=dist", iss)
+        self.assertIn('Source: "dist\\{#MyAppExeName}"', iss)
+        self.assertNotIn("C:\\Users\\jnedl", iss)
 
     def test_dmg_build_script_produces_named_setup_artifact(self):
         script = self._read("build_macos_dmg.sh")
@@ -75,6 +78,15 @@ class MacInstallerParityTests(unittest.TestCase):
         self.assertIn('#include "version.iss"', iss)
         version_iss = self._read("version.iss")
         self.assertIn(f'#define MyAppVersion "{version}"', version_iss)
+
+    def test_release_scripts_exist(self):
+        for rel in ("build_release.sh", "build_release.ps1", "build_exe.ps1"):
+            self.assertTrue(os.path.exists(os.path.join(ROOT, rel)), rel)
+        script = self._read("build_release.sh")
+        self.assertIn("build_macos_dmg.sh", script)
+        self.assertIn("build_exe.ps1", script)
+        self.assertIn("--macos", script)
+        self.assertIn("--windows", script)
 
 
 if __name__ == "__main__":

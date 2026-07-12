@@ -36,13 +36,13 @@ ArchitecturesAllowed=x64compatible
 ; the 64-bit view of the registry.
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
-LicenseFile=C:\Users\jnedl\Git Projects\amplify-teleport-desktop\LICENSE
+LicenseFile=LICENSE
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-OutputDir=C:\Users\jnedl\Git Projects\amplify-teleport-desktop
+OutputDir=dist
 OutputBaseFilename=Amplifi Teleport For Desktop Setup-{#MyAppVersion}
-SetupIconFile=C:\Users\jnedl\Git Projects\amplify-teleport-desktop\tray-icon.ico
+SetupIconFile=tray-icon.ico
 SolidCompression=yes
 WizardStyle=modern dynamic windows11
 
@@ -53,7 +53,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "C:\Users\jnedl\Git Projects\amplify-teleport-desktop\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
