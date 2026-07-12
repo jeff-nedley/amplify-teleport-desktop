@@ -301,7 +301,7 @@ clean_macos_dist() {
     mkdir -p "$DIST_DIR"
     log "Cleaning previous macOS artifacts from dist/"
     if [[ "$SKIP_APP_BUILD" -eq 0 ]]; then
-        rm -rf "${DIST_DIR}/${APP_BUNDLE}"
+        force_rm_rf "${DIST_DIR}/${APP_BUNDLE}"
     else
         log "Keeping existing ${APP_BUNDLE} (--skip-app-build)"
     fi
@@ -313,7 +313,7 @@ clean_macos_dist() {
         "${DIST_DIR}/Amplifi Teleport For Desktop Setup-"*.pkg
     do
         log "Removing $(basename "$path")"
-        rm -f "$path"
+        rm -f "$path" 2>/dev/null || force_rm_rf "$path"
     done
     shopt -u nullglob
 }
@@ -321,7 +321,7 @@ clean_macos_dist() {
 # --- main ---
 require_macos
 require_tools
-rm -rf "$BUILD_DIR"
+force_rm_rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 clean_macos_dist
