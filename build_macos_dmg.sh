@@ -69,6 +69,20 @@ UNINSTALLER_APP_NAME="Uninstall AmpliFi Teleport.app"
 
 log() { echo "[build_macos_dmg] $*"; }
 
+force_rm_rf() {
+    # Signed .app bundles often leave non-writable files; chmod then remove.
+    # Fall back to sudo if a prior elevated build left root-owned leftovers.
+    local target="$1"
+    [[ -e "$target" || -L "$target" ]] || return 0
+    chmod -R u+w "$target" 2>/dev/null || true
+    if rm -rf "$target" 2>/dev/null; then
+        return 0
+    fi
+    log "Retrying cleanup with sudo (permission-denied leftovers): $target"
+    sudo chmod -R u+w "$target" 2>/dev/null || true
+    sudo rm -rf "$target"
+}
+
 require_macos() {
     if [[ "$(uname -s)" != "Darwin" ]]; then
         log "ERROR: This packaging script must run on macOS (needs pkgbuild/productbuild/hdiutil)."

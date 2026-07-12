@@ -21,8 +21,20 @@ cd "$ROOT"
 WORK_DIR="${ROOT}/build/pyinstaller_app"
 APP_NAME="AmpliFi Teleport for Desktop"
 
-rm -rf "${WORK_DIR}"
-rm -rf "${ROOT}/dist/${APP_NAME}.app"
+force_rm_rf() {
+    local target="$1"
+    [[ -e "$target" || -L "$target" ]] || return 0
+    chmod -R u+w "$target" 2>/dev/null || true
+    if rm -rf "$target" 2>/dev/null; then
+        return 0
+    fi
+    echo "Retrying cleanup with sudo (permission-denied leftovers): $target"
+    sudo chmod -R u+w "$target" 2>/dev/null || true
+    sudo rm -rf "$target"
+}
+
+force_rm_rf "${WORK_DIR}"
+force_rm_rf "${ROOT}/dist/${APP_NAME}.app"
 rm -f "${ROOT}/${APP_NAME}.spec"
 
 ICON_ICO="${ROOT}/tray-icon.ico"
