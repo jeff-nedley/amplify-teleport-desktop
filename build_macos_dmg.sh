@@ -29,7 +29,7 @@ cd "$ROOT"
 APP_NAME="AmpliFi Teleport for Desktop"
 APP_BUNDLE="${APP_NAME}.app"
 IDENTIFIER="com.jeffnedley.amplifiteleport"
-VERSION="1.0.0"
+VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
 SKIP_APP_BUILD=0
 
 for arg in "$@"; do
@@ -42,6 +42,17 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [[ -z "${VERSION}" ]]; then
+    echo "ERROR: VERSION is empty (check ${ROOT}/VERSION or --version=)" >&2
+    exit 1
+fi
+
+# Keep Inno's version.iss aligned when cutting a release from macOS too.
+cat > "${ROOT}/version.iss" <<EOF
+; Generated from VERSION — do not edit by hand.
+#define MyAppVersion "${VERSION}"
+EOF
 
 SETUP_BASENAME="Amplifi Teleport For Desktop Setup-${VERSION}"
 DIST_DIR="${ROOT}/dist"

@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import CONFIG_PATH, ICON_PATH_ICO, ICON_PATH_PNG, TOKEN_FILE, UUID_FILE
+from config import APP_VERSION, CONFIG_PATH, ICON_PATH_ICO, ICON_PATH_PNG, TOKEN_FILE, UUID_FILE
 from notifications import show_toast
 from platform_utils import IS_MACOS, IS_WINDOWS
 from tunnel import (
@@ -516,7 +516,7 @@ class ControlWindow(QMainWindow):
         root.addWidget(self.actions_host, stretch=1)
 
         root.addSpacing(8)
-        version = QLabel("Version 1.0.0")
+        version = QLabel(f"Version {APP_VERSION}")
         version.setObjectName("versionLabel")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(version)

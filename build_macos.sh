@@ -86,6 +86,7 @@ pyinstaller --noconfirm --clean --windowed \
   --icon "${APP_ICON}" \
   --add-data "tray-icon.ico:." \
   --add-data "tray-icon.png:." \
+  --add-data "VERSION:." \
   --add-data "macos_menubar_helper.py:." \
   --add-data "macos/privileged/wg-helper.sh:macos/privileged" \
   --add-data "macos/privileged/install_privileges.sh:macos/privileged" \
@@ -117,7 +118,18 @@ if [[ -f "${INFO_PLIST}" ]]; then
   else
     /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "${INFO_PLIST}"
   fi
-  echo "Set LSUIElement=true in Info.plist (no Dock icon)"
+  APP_VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
+  if /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${INFO_PLIST}" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${APP_VERSION}" "${INFO_PLIST}"
+  else
+    /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${APP_VERSION}" "${INFO_PLIST}"
+  fi
+  if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${INFO_PLIST}" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${APP_VERSION}" "${INFO_PLIST}"
+  else
+    /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${APP_VERSION}" "${INFO_PLIST}"
+  fi
+  echo "Set LSUIElement=true and version=${APP_VERSION} in Info.plist"
 fi
 
 echo ""
