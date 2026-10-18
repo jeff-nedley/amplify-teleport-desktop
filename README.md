@@ -44,6 +44,16 @@ Generate WireGuard VPN configs for AmpliFi routers with Teleport enabled, so you
 
 **Uninstall:** use Apps & features on Windows, or **Uninstall AmpliFi Teleport** in Applications on macOS (Spotlight-searchable app). You will be asked whether to remove WireGuard as well.
 
+### Removing the macOS helper and password grant (macOS only)
+
+The macOS setup gives the app permission to manage your VPN without asking for your password each time. Uninstalling with the **Uninstall AmpliFi Teleport** app removes this automatically.
+
+If you deleted the app another way (for example, dragging it to the Trash), remove the leftover permission in Terminal:
+
+```bash
+sudo rm -f /etc/sudoers.d/amplifi-teleport /Library/PrivilegedHelperTools/amplifi-teleport-wg-helper
+```
+
 ## How to Use
 
 ### Windows
@@ -65,6 +75,8 @@ The app requests Administrator rights at startup (required for the WireGuard tun
 5. Click **Quit** (menu bar or **Quit AmpliFi Teleport** in the control window) to fully exit — this also disconnects the tunnel if it is still connected
 
 macOS may prompt for an administrator password **once** (at Setup install, or the first time you run from source). After that, Connect / Disconnect should not ask again.
+
+**Note on the administrator grant:** to let Connect / Disconnect work without asking for your password every time, the app installs a small helper (`amplifi-teleport-wg-helper`) and a one-line `sudoers` rule that lets it run without a password. This grant stays on your Mac until you uninstall the app — see *Removing the macOS helper and password grant* above. Running from source instead asks for your password on each Connect / Disconnect.
 
 ## Data location
 
