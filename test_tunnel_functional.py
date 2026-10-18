@@ -17,6 +17,9 @@ Address = 10.66.0.2/32
 DNS = 1.1.1.1, 8.8.8.8
 ListenPort = 51820
 PostDown = true
+PostUp = touch /tmp/pwned
+PreUp = echo owned
+PreDown = echo cleaned
 
 [Peer]
 PublicKey = LLLLMMMMNNNNOOOOPPPPQQQQRRRRSSSSTTTTUUUUVVV=
@@ -74,6 +77,10 @@ class MacosConfigPrepareTests(unittest.TestCase):
 
             self.assertNotRegex(prepared, r"(?im)^\s*DNS\s*=")
             self.assertNotIn("PostDown", prepared)
+            self.assertNotRegex(prepared, r"(?im)^\s*PreUp\s*=")
+            self.assertNotRegex(prepared, r"(?im)^\s*PostUp\s*=")
+            self.assertNotRegex(prepared, r"(?im)^\s*PreDown\s*=")
+            self.assertNotIn("pwned", prepared)
             self.assertIn("# AmpliFiTeleportDNS = 1.1.1.1, 8.8.8.8", prepared)
             self.assertIn("[Peer]", prepared)
 

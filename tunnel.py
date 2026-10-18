@@ -75,19 +75,27 @@ def generate_config(pin=None):
 
 def _prepare_macos_wg_config(config: str) -> str:
     """
-    Prepare a macOS WireGuard config that does not use DNS=.
+    Prepare a macOS WireGuard config that does not use DNS= or shell hooks.
 
     On Darwin, wg-quick's background route monitor can call set_dns() after
     teardown (ALRM race), leaving Wi-Fi connected with a dead tunnel resolver.
     We strip DNS= so the monitor never touches DNS; the privilege helper
     applies/clears DNS itself around up/down.
+
+    PreUp/PostUp/PreDown/PostDown lines are removed because the privilege
+    helper runs wg-quick as root: hook lines would be executed with root
+    privileges from a config file the unprivileged user can edit.
     """
     dns_values: list[str] = []
     lines: list[str] = []
     for raw in config.splitlines():
         stripped = raw.strip()
         lower = stripped.lower()
-        if lower.startswith("postdown"):
+        if lower.startswith(("preup", "postup", "predown", "postdown")):
+            logger.warning(
+                "Removed unsupported WireGuard hook line from macOS config: %s",
+                stripped.partition("=")[0].strip(),
+            )
             continue
         if lower.startswith("dns ") or lower.startswith("dns="):
             _, _, value = stripped.partition("=")
@@ -361,13 +369,14 @@ def _activate_macos():
 
 
 def _migrate_macos_config_dns() -> None:
-    """Strip DNS= from an existing teleport.conf so wg-quick cannot re-break DNS."""
+    """Strip DNS= and shell hooks from an existing teleport.conf so the
+    root-run helper can never execute or apply them."""
     if not IS_MACOS or not os.path.exists(CONFIG_PATH):
         return
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
             original = handle.read()
-        if not re.search(r"(?im)^\s*DNS\s*=", original):
+        if not re.search(r"(?im)^\s*(DNS|PreUp|PostUp|PreDown|PostDown)\s*=", original):
             return
         migrated = _prepare_macos_wg_config(original)
         with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
